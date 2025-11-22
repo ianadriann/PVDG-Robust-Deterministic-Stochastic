@@ -157,24 +157,8 @@ V2_max  = 1.05**2            # Batas maksimal Tegangan
 kappa   = 1.645
 
 
-
-# Prioritas site (berbasis L0)
-L0_vals = [v for v in L_0.values() if v > 0]
-L0_max = max(L0_vals) if L0_vals else 1.0
-
 # === Penampung hasil lintas growth (dipakai untuk gambar & tabel) ===
 demand_stats_by_growth = {}   # simpan μ_h & σ_h per growth
-supply_by_growth = {}         # simpan df_supply (per (s,h)) per growth
-siting_by_growth = {}         # simpan df_result kapasitas PV terpasang per growth
-adequacy_stats_by_growth = {} # simpan ringkasan adequacy (mean, std, CV) per jam per growth
-tight_hours_list = []         # akumulasi jam paling ketat lintas growth (untuk Table V.2)
-
-tight_hours_min_s_list = []   # 3–5 jam dengan min gap terburuk lintas skenario
-tight_hours_cv_list = []      # 3–5 jam dengan CV(adequacy) tertinggi
-
-network_metrics_by_growth = {}   # name -> dict berisi vmin, line loading, binding flags, dll.
-
-
 
 # ==============================================
 # Opsi B + S_MVA: headroom & batas fisik rating
@@ -184,14 +168,13 @@ pf_min = 0.90              # faktor daya minimum
 Smin_phys_MVA = 20.0       # MVA batas fisik minimum (lateral kecil)
 Smax_phys_MVA = 600.0      # MVA batas fisik maksimum (trunk besar)
 
-# ======================
-# Loop sub-skenario growth
-# ======================
-summary_rows = []
-avg_by_growth = {}   # untuk overlay lintas growth
-comp_rows = []  # for Table V.7 — model size & solve stats
+
 
 if __name__ == "__main__":
+    # Penampung hasil untuk SEMUA growth & model
+    summary_rows = []      # untuk tabel ringkasan utama
+    siting_by_growth = {}  # simpan df siting per growth & model
+    
     for name, g in growth_scenarios.items():
         # ----------------------------
         # Simulasi beban (growth ini)
@@ -291,7 +274,207 @@ if __name__ == "__main__":
                                     total_pv_cap_max=60000,  # batas total kapasitas (kW), default 60 MW
                                     solve=True               # kalau True: langsung optimize
                                 )
+        
+        # =======================
+        # Ringkasan MODEL DETERMINISTIC
+        # =======================
+        x_det      = vars_det["x_det"]
+        y_det      = vars_det["y_det"]
+        V2_det     = vars_det["V2_det"]
+        P_line_det = vars_det["P_line_det"]
 
-print(model_det.Status, model_stoc.Status, model_rob.Status)
+        if model_det.Status == GRB.OPTIMAL:
+            # Kapasitas & lokasi PV
+            det_results = []
+            for i in pv_buses:
+                if y_det[i].X > 0.5:
+                    det_results.append([i, x_det[i].X / 1000.0])  # kW→MW
+            df_det_siting = pd.DataFrame(det_results, columns=["Bus", "PV Capacity (MW)"])
+
+            # Total PV
+            total_pv_det_mw = sum(x_det[i].X for i in pv_buses) / 1000.0
+            num_sites_det   = sum(1 for i in pv_buses if y_det[i].X > 0.5)
+
+            # Metrik jaringan sederhana
+            vmin_det = min((V2_det[i, h].X)**0.5 for i in all_buses for h in hours)
+            vmax_det = max((V2_det[i, h].X)**0.5 for i in all_buses for h in hours)
+
+            max_loading_det = 0.0
+            for e, (u, v, R, S_MVA) in enumerate(lines):
+                P_lim = pf_min * S_MVA
+                if P_lim <= 0:
+                    continue
+                for h in hours:
+                    ratio = abs(P_line_det[e, h].X) / P_lim
+                    max_loading_det = max(max_loading_det, ratio)
+            max_loading_det_pct = 100.0 * max_loading_det
+
+            # simpan ke ringkasan
+            summary_rows.append({
+                "Growth": name,
+                "Model": "DET",
+                "Total PV (MW)": total_pv_det_mw,
+                "#Sites": num_sites_det,
+                "Vmin (p.u.)": vmin_det,
+                "Vmax (p.u.)": vmax_det,
+                "Max line loading (%)": max_loading_det_pct,
+            })
+
+            # kalau mau simpan siting detail:
+            siting_by_growth[(name, "DET")] = df_det_siting.copy()
+        else:
+            print(f"[{name}] Model deterministic tidak optimal, status =", model_det.Status)
+
+        # =======================
+        # Ringkasan MODEL STOCHASTIC
+        # =======================
+        x_stoc      = vars_stoc["x_stoc"]
+        y_stoc      = vars_stoc["y_stoc"]
+        V2_stoc     = vars_stoc["V2_stoc"]
+        P_line_stoc = vars_stoc["P_line_stoc"]
+        P_pv_stoc   = vars_stoc["P_pv_stoc"]
+        P_grid_stoc = vars_stoc["P_grid_stoc"]
+
+        if model_stoc.Status == GRB.OPTIMAL:
+            stoc_results = []
+            for i in pv_buses:
+                if y_stoc[i].X > 0.5:
+                    stoc_results.append([i, x_stoc[i].X / 1000.0])
+            df_stoc_siting = pd.DataFrame(stoc_results, columns=["Bus", "PV Capacity (MW)"])
+
+            total_pv_stoc_mw = sum(x_stoc[i].X for i in pv_buses) / 1000.0
+            num_sites_stoc   = sum(1 for i in pv_buses if y_stoc[i].X > 0.5)
+
+            # Voltage & loading: worst case across semua s
+            vmin_stoc = float("inf")
+            vmax_stoc = 0.0
+            for i in all_buses:
+                for h in hours:
+                    for s in scenarios:
+                        v = (V2_stoc[i, h, s].X)**0.5
+                        vmin_stoc = min(vmin_stoc, v)
+                        vmax_stoc = max(vmax_stoc, v)
+
+            max_loading_stoc = 0.0
+            for e, (u, v, R, S_MVA) in enumerate(lines):
+                P_lim = pf_min * S_MVA
+                if P_lim <= 0:
+                    continue
+                for h in hours:
+                    for s in scenarios:
+                        ratio = abs(P_line_stoc[e, h, s].X) / P_lim
+                        max_loading_stoc = max(max_loading_stoc, ratio)
+            max_loading_stoc_pct = 100.0 * max_loading_stoc
+
+            # OPTIONAL: share energi PV vs grid (sehari representatif)
+            pv_energy_day    = 0.0
+            grid_energy_day  = 0.0
+            for s in scenarios:
+                for h in hours:
+                    pv_tot   = sum(P_pv_stoc[i, h, s].X for i in pv_buses)
+                    grid_tot = P_grid_stoc[h, s].X
+                    pv_energy_day   += pv_tot
+                    grid_energy_day += grid_tot
+            pv_energy_day   /= len(scenarios)  # MWh/hari kalau ∆t = 1 jam
+            grid_energy_day /= len(scenarios)
+
+            summary_rows.append({
+                "Growth": name,
+                "Model": "STOCH",
+                "Total PV (MW)": total_pv_stoc_mw,
+                "#Sites": num_sites_stoc,
+                "Vmin (p.u.)": vmin_stoc,
+                "Vmax (p.u.)": vmax_stoc,
+                "Max line loading (%)": max_loading_stoc_pct,
+                "PV energy (MWh/day)": pv_energy_day,
+                "Grid energy (MWh/day)": grid_energy_day,
+            })
+
+            siting_by_growth[(name, "STOCH")] = df_stoc_siting.copy()
+        else:
+            print(f"[{name}] Model stochastic tidak optimal, status =", model_stoc.Status)
+        
+        # =======================
+        # Ringkasan MODEL ROBUST
+        # =======================
+        x_rob      = vars_rob["x_rob"]
+        y_rob      = vars_rob["y_rob"]
+        V2_rob     = vars_rob["V2_rob"]
+        P_line_rob = vars_rob["P_line_rob"]
+        P_pv_rob   = vars_rob["P_pv_rob"]
+        P_grid_rob = vars_rob["P_grid_rob"]
+        R_res      = vars_rob["R_res"]
+
+        if model_rob.Status == GRB.OPTIMAL:
+            rob_results = []
+            for i in pv_buses:
+                if y_rob[i].X > 0.5:
+                    rob_results.append([i, x_rob[i].X / 1000.0])
+            df_rob_siting = pd.DataFrame(rob_results, columns=["Bus", "PV Capacity (MW)"])
+
+            total_pv_rob_mw = sum(x_rob[i].X for i in pv_buses) / 1000.0
+            num_sites_rob   = sum(1 for i in pv_buses if y_rob[i].X > 0.5)
+
+            # Voltage & loading: worst case across semua s
+            vmin_rob = float("inf")
+            vmax_rob = 0.0
+            for i in all_buses:
+                for h in hours:
+                    for s in scenarios:
+                        v = (V2_rob[i, h, s].X)**0.5
+                        vmin_rob = min(vmin_rob, v)
+                        vmax_rob = max(vmax_rob, v)
+
+            max_loading_rob = 0.0
+            for e, (u, v, R, S_MVA) in enumerate(lines):
+                P_lim = pf_min * S_MVA
+                if P_lim <= 0:
+                    continue
+                for h in hours:
+                    for s in scenarios:
+                        ratio = abs(P_line_rob[e, h, s].X) / P_lim
+                        max_loading_rob = max(max_loading_rob, ratio)
+            max_loading_rob_pct = 100.0 * max_loading_rob
+
+            # Energi PV & grid per "hari representatif"
+            pv_energy_day_rob   = 0.0
+            grid_energy_day_rob = 0.0
+            for s in scenarios:
+                for h in hours:
+                    pv_tot   = sum(P_pv_rob[i, h, s].X for i in pv_buses)
+                    grid_tot = P_grid_rob[h, s].X
+                    pv_energy_day_rob   += pv_tot
+                    grid_energy_day_rob += grid_tot
+            pv_energy_day_rob   /= len(scenarios)
+            grid_energy_day_rob /= len(scenarios)
+
+            # Robust reserve rata-rata
+            avg_reserve = sum(R_res[h].X for h in hours) / len(hours)
+
+            summary_rows.append({
+                "Growth": name,
+                "Model": "ROBUST",
+                "Total PV (MW)": total_pv_rob_mw,
+                "#Sites": num_sites_rob,
+                "Vmin (p.u.)": vmin_rob,
+                "Vmax (p.u.)": vmax_rob,
+                "Max line loading (%)": max_loading_rob_pct,
+                "PV energy (MWh/day)": pv_energy_day_rob,
+                "Grid energy (MWh/day)": grid_energy_day_rob,
+                "Avg reserve (MW)": avg_reserve,
+            })
+
+            siting_by_growth[(name, "ROBUST")] = df_rob_siting.copy()
+        else:
+            print(f"[{name}] Model robust tidak optimal, status =", model_rob.Status)
+
+
+
+
+df_summary = pd.DataFrame(summary_rows)
+print("\n=== Ringkasan semua growth & model ===")
+print(df_summary)
+df_summary.to_excel("summary_det_stoch_robust.xlsx", index=False)
+
 
 
