@@ -3,11 +3,10 @@ from gurobipy import Model, GRB, quicksum
 def build_stochastic_pv_model(
     name, pv_buses, all_buses, hours, scenarios, lines, df_pv, df_load,
     L_0, edges_by_to, edges_by_from, slack_bus, x_max, x_min, n_max,
-    V2_min, V2_max, pf_min,
+    V2_min, V2_max, pf_min, alpha_pv, beta_grid,
     total_pv_cap_max=60000,  # batas total kapasitas (kW), default 60 MW
     solve=False               # kalau True: langsung optimize
 ):
-   
 
     # 0. Buat model
     model_stoc = Model(f"Stochastic_{name}")  # name = 'Low', 'Base', 'High'
@@ -22,8 +21,15 @@ def build_stochastic_pv_model(
     P_pv_stoc           = model_stoc.addVars(pv_buses, hours, scenarios, vtype=GRB.CONTINUOUS, name="PV_Output")
 
 
-    # 2. Fungsi objektif
-    model_stoc.setObjective(quicksum(x_stoc[i] for i in pv_buses),GRB.MINIMIZE)
+    # 2. Fungsi objektif: kapasitas PV + rata-rata impor grid
+    model_stoc.setObjective(
+        alpha_pv * quicksum(x_stoc[i] for i in pv_buses) +
+        beta_grid * (1.0 / len(scenarios)) * quicksum(
+            P_grid_stoc[h, s] for h in hours for s in scenarios
+        ),
+        GRB.MINIMIZE
+    )
+
 
 
     # 3. Kendala PV (C1)

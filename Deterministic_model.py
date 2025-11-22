@@ -3,11 +3,12 @@ from gurobipy import Model, GRB, quicksum
 def build_deterministic_pv_model(
     name, pv_buses, all_buses, hours, lines, df_pv, df_load,
     L_0, edges_by_to, edges_by_from, slack_bus, x_max, x_min,
-    n_max, V2_min, V2_max, pf_min,
+    n_max, V2_min, V2_max, pf_min, alpha_pv, beta_grid,
     total_pv_cap_max=60000,  # batas total kapasitas (kW), default 60 MW
     solve=False               # kalau True: langsung optimize
 ):
-   
+
+
 
     # 0. Buat model
     model_det = Model(f"Deterministic_{name}")
@@ -24,7 +25,13 @@ def build_deterministic_pv_model(
     P_pv_det   = model_det.addVars(pv_buses, hours, vtype=GRB.CONTINUOUS, name="PV_Output")
 
     # 2. Fungsi objektif: minimasi total kapasitas PV terpasang
-    model_det.setObjective(quicksum(x_det[i] for i in pv_buses), GRB.MINIMIZE)
+    # 2. Fungsi objektif: kombinasi kapasitas PV + impor grid
+    model_det.setObjective(
+        alpha_pv * quicksum(x_det[i] for i in pv_buses) +
+        beta_grid * quicksum(P_grid_det[h] for h in hours),
+        GRB.MINIMIZE
+    )
+
 
     # 3. Kendala PV (C1): rata-rata PV Output Factor per Hour–Bus
     df_pv_det = df_pv.groupby(['Hour', 'Bus'])['PV Output Factor'].mean().reset_index()

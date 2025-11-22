@@ -150,11 +150,15 @@ df_pv = pd.DataFrame(pv_data, columns=['Scenario', 'Hour', 'Bus', 'Irradiance (W
 
 x_min   = 300                 # kW
 x_max   = 20000               # kW
-c_res   = 0.001               # contoh nilai kecil, silakan disesuaikan
+c_res   = 0.01               # contoh nilai kecil, silakan disesuaikan
 n_max   = 5                   # Batas Jumlah PV
 V2_min  = 0.95**2            # Batas Minimal Tegangan
 V2_max  = 1.05**2            # Batas maksimal Tegangan
 kappa   = 1.645
+# Bobot objektif teknis
+alpha_pv  = 0.001  # bobot kapasitas PV (per kW)
+beta_grid = 1.0    # bobot impor grid (per MW rata-rata)
+
 
 
 # === Penampung hasil lintas growth (dipakai untuk gambar & tabel) ===
@@ -167,6 +171,65 @@ HEADROOM = 1.10            # 10% di atas robust-peak
 pf_min = 0.90              # faktor daya minimum
 Smin_phys_MVA = 20.0       # MVA batas fisik minimum (lateral kecil)
 Smax_phys_MVA = 600.0      # MVA batas fisik maksimum (trunk besar)
+
+# =========================================================
+# RATING LINE / TRAFO EKSISTING BERDASARKAN SKENARIO "High"
+# (designed for worst-case growth, lalu DIPAKAI TETAP untuk
+#  semua growth: Low, Base, High → no reinforcement)
+# =========================================================
+
+g_design = growth_scenarios['High']  # skenario growth paling berat
+
+# Simulasi beban untuk skenario desain "High"
+np.random.seed(42)  # konsisten dengan simulasi lain
+load_data_high = []
+for s in scenarios:
+    for h in hours:
+        for i in all_buses:
+            mean = L_0[i] * (1 + g_design) ** planning_years * load_profile[h]
+            std_dev = 0.05 * mean
+            value = np.random.normal(mean, std_dev)
+            load_data_high.append([s, h, i, max(value, 0.0)])
+
+df_load_high = pd.DataFrame(load_data_high,
+                            columns=['Scenario', 'Hour', 'Bus', 'Load (MW)'])
+
+# μ & σ per-bus per-jam untuk skenario "High"
+df_bus_stats = df_load_high.groupby(['Hour', 'Bus'])['Load (MW)'] \
+                           .agg(['mean', 'std']).reset_index()
+df_bus_stats['std'] = df_bus_stats['std'].fillna(0.0)
+
+# Robust load = μ + ρσ
+robust_load_high = {
+    (int(row['Hour']), int(row['Bus'])): row['mean'] + rho * row['std']
+    for _, row in df_bus_stats.iterrows()
+}
+
+# Hitung S_edge_MVA dari robust downstream peak + headroom
+S_edge_MVA = []
+for e, (u, v, R, _) in enumerate(lines_base):
+    ds_nodes = edge_downstream[e]
+    ds_hour_peaks = []
+    for h in hours:
+        total_ds = sum(robust_load_high.get((h, b), 0.0) for b in ds_nodes)  # MW
+        ds_hour_peaks.append(total_ds)
+
+    robust_peak_MW = HEADROOM * (max(ds_hour_peaks) if ds_hour_peaks else 0.0)  # MW
+    S_req_MVA = robust_peak_MW / pf_min   # konversi ke MVA
+    S_edge_MVA.append(max(Smin_phys_MVA, min(S_req_MVA, Smax_phys_MVA)))
+
+# Bentuk lines eksisting (R, S_MVA tetap untuk SEMUA growth)
+lines = []
+for e, (u, v, R, _) in enumerate(lines_base):
+    lines.append((u, v, R, S_edge_MVA[e]))
+
+# Index bantu edges_by_from / edges_by_to (topologi sama)
+edges_by_from = {i: [] for i in all_buses}
+edges_by_to   = {i: [] for i in all_buses}
+for e, (u, v, R, S_MVA) in enumerate(lines):
+    edges_by_from[u].append(e)
+    edges_by_to[v].append(e)
+
 
 
 
@@ -189,44 +252,6 @@ if __name__ == "__main__":
                     value = np.random.normal(mean, std_dev)
                     load_data.append([s, h, i, max(value, 0)])
         df_load = pd.DataFrame(load_data, columns=['Scenario', 'Hour', 'Bus', 'Load (MW)'])
-
-        # -------------------------------
-        # μ & σ per-bus per-jam → robust
-        # -------------------------------
-        df_bus_stats = df_load.groupby(['Hour', 'Bus'])['Load (MW)'].agg(['mean', 'std']).reset_index()
-        df_bus_stats['std'] = df_bus_stats['std'].fillna(0.0)
-        robust_load = {(int(row['Hour']), int(row['Bus'])): row['mean'] + rho * row['std']
-                    for _, row in df_bus_stats.iterrows()}
-
-        # --------------------------------------------------------
-        # Hitung S_MVA per edge dari robust downstream peak + headroom
-        # --------------------------------------------------------
-        S_edge_MVA = []
-        for e, (u, v, R, _) in enumerate(lines_base):
-            ds_nodes = edge_downstream[e]
-            # akumulasi robust downstream per jam → ambil puncak
-            ds_hour_peaks = []
-            for h in hours:
-                total_ds = sum(robust_load.get((h, b), 0.0) for b in ds_nodes)  # MW
-                ds_hour_peaks.append(total_ds)
-            robust_peak_MW = HEADROOM * (max(ds_hour_peaks) if ds_hour_peaks else 0.0)  # MW with headroom
-            # konversi kebutuhan P ke rating apparent (MVA) via pf_min
-            S_req_MVA = robust_peak_MW / pf_min
-            # jepit ke rentang fisik
-            S_edge_MVA.append(max(Smin_phys_MVA, min(S_req_MVA, Smax_phys_MVA)))
-
-        # bentuk ulang lines efektif untuk growth ini (pakai S_MVA)
-        lines = []
-        for (e, (u, v, R, _)) in enumerate(lines_base):
-            lines.append((u, v, R, S_edge_MVA[e]))  # terakhir sekarang S_MVA
-
-
-        # rebuild index bantu (edges_by_from/to) sesuai lines (topologi sama)
-        edges_by_from = {i: [] for i in all_buses}  # bukan pv_buses
-        edges_by_to   = {i: [] for i in all_buses}
-        for e, (u, v, R, S_MVA) in enumerate(lines):
-            edges_by_from[u].append(e)
-            edges_by_to[v].append(e)
 
 
         # ----------------
@@ -252,7 +277,7 @@ if __name__ == "__main__":
         model_det, vars_det = build_deterministic_pv_model(
                                     name, pv_buses, all_buses, hours, lines, df_pv, df_load,
                                     L_0, edges_by_to, edges_by_from, slack_bus, x_max=x_max, x_min=x_min,
-                                    n_max=n_max, V2_min=V2_min, V2_max=V2_max, pf_min=pf_min,
+                                    n_max=n_max, V2_min=V2_min, V2_max=V2_max, pf_min=pf_min, alpha_pv=alpha_pv, beta_grid=beta_grid,
                                     total_pv_cap_max=60000,  # batas total kapasitas (kW), default 60 MW
                                     solve=True               # kalau True: langsung optimize
                                 )
@@ -261,7 +286,7 @@ if __name__ == "__main__":
         model_stoc, vars_stoc = build_stochastic_pv_model(
                                     name, pv_buses, all_buses, hours, scenarios, lines, df_pv, df_load,
                                     L_0, edges_by_to, edges_by_from, slack_bus, x_max=x_max, x_min=x_min, n_max=n_max,
-                                    V2_min=V2_min, V2_max=V2_max, pf_min=pf_min,
+                                    V2_min=V2_min, V2_max=V2_max, pf_min=pf_min, alpha_pv=alpha_pv, beta_grid=beta_grid,
                                     total_pv_cap_max=60000,  # batas total kapasitas (kW), default 60 MW
                                     solve=True               # kalau True: langsung optimize
                                 )
@@ -270,7 +295,7 @@ if __name__ == "__main__":
         model_rob, vars_rob = build_robust_pv_model(
                                     name, pv_buses, all_buses, hours, scenarios, lines, df_pv, df_load, L_0, edges_by_to,
                                     edges_by_from, slack_bus, x_max=x_max, x_min=x_min, n_max=n_max, V2_min=V2_min, V2_max=V2_max,
-                                    pf_min=pf_min, mu_load=mu_load, sigma_load=sigma_load, kappa=kappa, c_res=c_res,
+                                    pf_min=pf_min, mu_load=mu_load, sigma_load=sigma_load, kappa=kappa, c_res=c_res, alpha_pv=alpha_pv, beta_grid=beta_grid,
                                     total_pv_cap_max=60000,  # batas total kapasitas (kW), default 60 MW
                                     solve=True               # kalau True: langsung optimize
                                 )
@@ -467,6 +492,15 @@ if __name__ == "__main__":
             siting_by_growth[(name, "ROBUST")] = df_rob_siting.copy()
         else:
             print(f"[{name}] Model robust tidak optimal, status =", model_rob.Status)
+
+    print("\n=== Detail lokasi PV per growth & model ===")
+    for (growth, model), df_siting in siting_by_growth.items():
+        print(f"\n[{growth} - {model}]")
+        if df_siting.empty:
+            print("  (Tidak ada PV dipasang)")
+        else:
+            print(df_siting)
+
 
 
 

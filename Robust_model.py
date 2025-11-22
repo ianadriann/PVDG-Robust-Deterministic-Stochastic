@@ -12,11 +12,11 @@ from gurobipy import Model, GRB, quicksum
 
 def build_robust_pv_model(
     name, pv_buses, all_buses, hours, scenarios, lines, df_pv, df_load, L_0, edges_by_to, edges_by_from, slack_bus,
-    x_max, x_min, n_max, V2_min, V2_max, pf_min, mu_load, sigma_load, kappa, c_res,
+    x_max, x_min, n_max, V2_min, V2_max, pf_min, mu_load, sigma_load, kappa, c_res, alpha_pv, beta_grid,
     total_pv_cap_max=60000,  # batas total kapasitas (kW), default 60 MW
     solve=False               # kalau True: langsung optimize
 ):
-   
+
     # 0. Buat model
     model_rob = Model(f"Robust_{name}")  # name = 'Low', 'Base', 'High'
     model_rob.setParam("OutputFlag", 0)
@@ -30,13 +30,15 @@ def build_robust_pv_model(
     R_res              = model_rob.addVars(hours, vtype=GRB.CONTINUOUS, lb=0.0, name="Reserve")
     P_pv_rob           = model_rob.addVars(pv_buses, hours, scenarios, vtype=GRB.CONTINUOUS, name="PV_Output")
 
-    #   P_line_rob[e,h,s], V2_rob[i,h,s], (dan R_res[h] khusus robust)
 
+    # 2. Fungsi objektif: kapasitas PV + impor grid + reserve penalty
+    model_rob.setObjective(
+        alpha_pv * quicksum(x_rob[i] for i in pv_buses) 
+        + beta_grid * (1.0 / len(scenarios)) * quicksum(P_grid_rob[h, s] for h in hours for s in scenarios)
+        + c_res * quicksum(R_res[h] for h in hours),
+        GRB.MINIMIZE
+        )
 
-    # 2. Fungsi objektif
-    model_rob.setObjective(quicksum(x_rob[i] for i in pv_buses) +
-                    c_res * quicksum(R_res[h] for h in hours),
-                    GRB.MINIMIZE)
 
 
     # 3. Kendala PV (C1)
