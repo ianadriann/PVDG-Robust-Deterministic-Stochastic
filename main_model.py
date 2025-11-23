@@ -239,6 +239,7 @@ if __name__ == "__main__":
     summary_rows = []       # untuk tabel ringkasan utama
     siting_by_growth = {}   # simpan df siting per growth & model
     adequacy_rows = []      #Penampung metrik adequacy (PV vs μ, μ+κσ)
+    v_envelope = {}         # (growth, model) → DataFrame Hour, Vmin, Vmax
     
     for name, g in growth_scenarios.items():
         # ----------------------------
@@ -337,6 +338,22 @@ if __name__ == "__main__":
                     max_loading_det = max(max_loading_det, ratio)
             max_loading_det_pct = 100.0 * max_loading_det
 
+            # --- Envelope tegangan per jam (DET) ---
+            vmin_by_h_det = []
+            vmax_by_h_det = []
+            for h in hours:
+                vs = [(V2_det[i, h].X)**0.5 for i in all_buses]
+                vmin_by_h_det.append(min(vs))
+                vmax_by_h_det.append(max(vs))
+
+            df_env_det = pd.DataFrame({
+                "Hour": hours,
+                "Vmin": vmin_by_h_det,
+                "Vmax": vmax_by_h_det,
+            })
+            v_envelope[(name, "DET")] = df_env_det
+
+
             # simpan ke ringkasan
             summary_rows.append({
                 "Growth": name,
@@ -405,6 +422,28 @@ if __name__ == "__main__":
                     grid_energy_day += grid_tot
             pv_energy_day   /= len(scenarios)  # MWh/hari kalau ∆t = 1 jam
             grid_energy_day /= len(scenarios)
+
+            # --- Envelope tegangan per jam (STOCH) ---
+            vmin_by_h_stoc = []
+            vmax_by_h_stoc = []
+            for h in hours:
+                vmin_h = float("inf")
+                vmax_h = 0.0
+                for s in scenarios:
+                    for i in all_buses:
+                        v = (V2_stoc[i, h, s].X)**0.5
+                        vmin_h = min(vmin_h, v)
+                        vmax_h = max(vmax_h, v)
+                vmin_by_h_stoc.append(vmin_h)
+                vmax_by_h_stoc.append(vmax_h)
+
+            df_env_stoc = pd.DataFrame({
+                "Hour": hours,
+                "Vmin": vmin_by_h_stoc,
+                "Vmax": vmax_by_h_stoc,
+            })
+            v_envelope[(name, "STOCH")] = df_env_stoc
+
 
             summary_rows.append({
                 "Growth": name,
@@ -478,6 +517,29 @@ if __name__ == "__main__":
 
             # Robust reserve rata-rata
             avg_reserve = sum(R_res[h].X for h in hours) / len(hours)
+
+            # --- Envelope tegangan per jam (ROBUST) ---
+            vmin_by_h_rob = []
+            vmax_by_h_rob = []
+            for h in hours:
+                vmin_h = float("inf")
+                vmax_h = 0.0
+                for s in scenarios:
+                    for i in all_buses:
+                        v = (V2_rob[i, h, s].X)**0.5
+                        vmin_h = min(vmin_h, v)
+                        vmax_h = max(vmax_h, v)
+                vmin_by_h_rob.append(vmin_h)
+                vmax_by_h_rob.append(vmax_h)
+
+            df_env_rob = pd.DataFrame({
+                "Hour": hours,
+                "Vmin": vmin_by_h_rob,
+                "Vmax": vmax_by_h_rob,
+            })
+            v_envelope[(name, "ROBUST")] = df_env_rob
+
+
 
             summary_rows.append({
                 "Growth": name,
@@ -616,8 +678,6 @@ if __name__ == "__main__":
             print(df_siting)
 
 
-
-
 df_summary = pd.DataFrame(summary_rows)
 print("\n=== Ringkasan semua growth & model ===")
 print(df_summary)
@@ -628,6 +688,94 @@ df_adequacy = pd.DataFrame(adequacy_rows)
 print("\n=== Ringkasan adequacy (PV vs μ, μ+κσ) ===")
 print(df_adequacy)
 df_adequacy.to_excel("adequacy_det_stoch_robust.xlsx", index=False)
+
+# =========================================
+# 3. Voltage envelope: tabel + Excel
+# =========================================
+
+env_rows = []
+for (growth, model), df_env in v_envelope.items():
+    for _, row in df_env.iterrows():
+        env_rows.append({
+            "Growth": growth,
+            "Model": model,
+            "Hour": int(row["Hour"]),
+            "Vmin (p.u.)": float(row["Vmin"]),
+            "Vmax (p.u.)": float(row["Vmax"]),
+        })
+
+if env_rows:
+    df_env_all = pd.DataFrame(env_rows)
+    df_env_all['Growth'] = pd.Categorical(
+        df_env_all['Growth'],
+        categories=['Low', 'Base', 'High'],
+        ordered=True
+    )
+    df_env_all = df_env_all.sort_values(['Growth', 'Model', 'Hour'])
+
+    print("\n=== Voltage envelope – semua growth & model ===")
+    # Kalau mau lihat semua, hapus .head(60)
+    print(df_env_all.head(60))
+
+    # Simpan ke Excel:
+    #  - Sheet "All"   : semua growth+model
+    #  - Sheet per kombinasi (Low_DET, Base_STOCH, dst.)
+    with pd.ExcelWriter("voltage_envelope_all.xlsx") as writer:
+        df_env_all.to_excel(writer, sheet_name="All", index=False)
+        for (growth, model), df_env in v_envelope.items():
+            sheet_name = f"{growth}_{model}"
+            # sheet name max 31 chars, aman di sini
+            df_env.to_excel(writer, sheet_name=sheet_name, index=False)
+else:
+    print("\n[Tidak ada data voltage envelope di v_envelope]")
+
+
+# =========================================
+# 4. Voltage envelope per jam (contoh: Base growth)
+# =========================================
+growth_to_plot = "Base"
+
+# Pastikan data envelope untuk growth & model tersedia
+models_env = []
+for m in ["DET", "STOCH", "ROBUST"]:
+    key = (growth_to_plot, m)
+    if key in v_envelope:
+        models_env.append(m)
+
+if models_env:
+    plt.figure(figsize=(8, 4))
+
+    # Plot Vmin per model
+    for m in models_env:
+        df_env = v_envelope[(growth_to_plot, m)]
+        plt.plot(df_env["Hour"], df_env["Vmin"],
+                 marker="o",
+                 linestyle="-",
+                 label=f"{m} - Vmin")
+
+    # Plot Vmax per model
+    for m in models_env:
+        df_env = v_envelope[(growth_to_plot, m)]
+        plt.plot(df_env["Hour"], df_env["Vmax"],
+                 marker="",
+                 linestyle="--",
+                 label=f"{m} - Vmax")
+
+    # Batas tegangan
+    plt.axhline(0.95, linestyle=":", label="Vmin limit (0.95 p.u.)")
+    plt.axhline(1.05, linestyle=":", label="Vmax limit (1.05 p.u.)")
+
+    plt.xlabel("Hour of day")
+    plt.ylabel("Voltage magnitude (p.u.)")
+    plt.title(f"Voltage envelope – {growth_to_plot} growth scenario")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+else:
+    print(f"Tidak ada data envelope untuk growth = {growth_to_plot}")
+
+
 
 
 # =========================================
