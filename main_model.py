@@ -236,8 +236,9 @@ for e, (u, v, R, S_MVA) in enumerate(lines):
 
 if __name__ == "__main__":
     # Penampung hasil untuk SEMUA growth & model
-    summary_rows = []      # untuk tabel ringkasan utama
-    siting_by_growth = {}  # simpan df siting per growth & model
+    summary_rows = []       # untuk tabel ringkasan utama
+    siting_by_growth = {}   # simpan df siting per growth & model
+    adequacy_rows = []      #Penampung metrik adequacy (PV vs μ, μ+κσ)
     
     for name, g in growth_scenarios.items():
         # ----------------------------
@@ -308,6 +309,7 @@ if __name__ == "__main__":
         y_det      = vars_det["y_det"]
         V2_det     = vars_det["V2_det"]
         P_line_det = vars_det["P_line_det"]
+        P_pv_det   = vars_det["P_pv_det"] 
 
         if model_det.Status == GRB.OPTIMAL:
             # Kapasitas & lokasi PV
@@ -494,6 +496,116 @@ if __name__ == "__main__":
         else:
             print(f"[{name}] Model robust tidak optimal, status =", model_rob.Status)
 
+        # -------------------------------
+        # ADEQUACY: PV vs μ dan μ + κσ
+        # -------------------------------
+        # Kita bandingkan di level sistem (agregat semua bus)
+        # - DET  : pakai PV deterministik (sudah merepresentasikan rata-rata skenario)
+        # - STOCH: pakai rata-rata PV across scenarios
+        # - ROB  : rata-rata PV saja, dan PV + R_res (robust reserve)
+
+        # Pastikan semua model optimal dulu
+        if (model_det.Status == GRB.OPTIMAL and
+            model_stoc.Status == GRB.OPTIMAL and
+            model_rob.Status == GRB.OPTIMAL):
+
+            # --- Helper: mu_h dan mu_kappa_sigma_h per jam ---
+            # mu_load dan sigma_load sudah dihitung di awal loop growth
+            # mu_load[h] : rata-rata beban sistem per jam (MW)
+            # sigma_load[h] : std dev beban sistem per jam (MW)
+            # mu+kappaσ : batas adequacy robust
+            # (satuan semua MW)
+
+            # 1) MODEL DETERMINISTIC: PV_det vs μ dan μ+κσ
+            min_gap_mu_det      = float("inf")
+            min_gap_muk_det     = float("inf")
+
+            for h in hours:
+                # total PV expected output di jam h (MW)
+                pv_det_h = sum(P_pv_det[i, h].X for i in pv_buses)
+
+                mu_h      = mu_load[h]
+                mu_k_h    = mu_load[h] + kappa * sigma_load[h]
+
+                gap_mu    = pv_det_h - mu_h
+                gap_muk   = pv_det_h - mu_k_h
+
+                min_gap_mu_det  = min(min_gap_mu_det,  gap_mu)
+                min_gap_muk_det = min(min_gap_muk_det, gap_muk)
+
+            adequacy_rows.append({
+                "Growth": name,
+                "Model": "DET",
+                "Min PV - μ (MW)": min_gap_mu_det,
+                "Min PV - (μ+κσ) (MW)": min_gap_muk_det,
+            })
+
+            # 2) MODEL STOCHASTIC: rata-rata PV_stoc vs μ dan μ+κσ
+            min_gap_mu_stoc  = float("inf")
+            min_gap_muk_stoc = float("inf")
+
+            for h in hours:
+                # rata-rata across scenarios: (1/|S|) Σ_s Σ_i P_pv_stoc[i,h,s]
+                pv_sum = 0.0
+                for s in scenarios:
+                    pv_sum += sum(P_pv_stoc[i, h, s].X for i in pv_buses)
+                pv_avg_h = pv_sum / len(scenarios)  # MW
+
+                mu_h    = mu_load[h]
+                mu_k_h  = mu_load[h] + kappa * sigma_load[h]
+
+                gap_mu   = pv_avg_h - mu_h
+                gap_muk  = pv_avg_h - mu_k_h
+
+                min_gap_mu_stoc  = min(min_gap_mu_stoc,  gap_mu)
+                min_gap_muk_stoc = min(min_gap_muk_stoc, gap_muk)
+
+            adequacy_rows.append({
+                "Growth": name,
+                "Model": "STOCH",
+                "Min PV - μ (MW)": min_gap_mu_stoc,
+                "Min PV - (μ+κσ) (MW)": min_gap_muk_stoc,
+            })
+
+            # 3) MODEL ROBUST:
+            #    (a) PV_rob saja vs μ+κσ
+            #    (b) PV_rob + R_res vs μ+κσ  → harus ≥ 0 oleh konstruksi model
+
+            min_gap_mu_rob      = float("inf")
+            min_gap_muk_rob_PV  = float("inf")
+            min_gap_muk_rob_PVR = float("inf")
+
+            for h in hours:
+                # rata-rata PV_rob across scenarios
+                pv_sum = 0.0
+                for s in scenarios:
+                    pv_sum += sum(P_pv_rob[i, h, s].X for i in pv_buses)
+                pv_avg_h = pv_sum / len(scenarios)   # MW
+
+                res_h    = R_res[h].X               # MW (robust reserve di jam h)
+
+                mu_h     = mu_load[h]
+                mu_k_h   = mu_load[h] + kappa * sigma_load[h]
+
+                gap_mu       = pv_avg_h - mu_h
+                gap_muk_PV   = pv_avg_h - mu_k_h
+                gap_muk_PVR  = pv_avg_h + res_h - mu_k_h
+
+                min_gap_mu_rob      = min(min_gap_mu_rob,      gap_mu)
+                min_gap_muk_rob_PV  = min(min_gap_muk_rob_PV,  gap_muk_PV)
+                min_gap_muk_rob_PVR = min(min_gap_muk_rob_PVR, gap_muk_PVR)
+
+            adequacy_rows.append({
+                "Growth": name,
+                "Model": "ROBUST",
+                "Min PV - μ (MW)": min_gap_mu_rob,
+                "Min PV - (μ+κσ) (MW)": min_gap_muk_rob_PV,
+                "Min (PV+R) - (μ+κσ) (MW)": min_gap_muk_rob_PVR,
+            })
+        else:
+            print(f"[{name}] Adequacy tidak dihitung karena ada model yang tidak optimal.")
+
+
 
     print("\n=== Detail lokasi PV per growth & model ===")
     for (growth, model), df_siting in siting_by_growth.items():
@@ -504,11 +616,18 @@ if __name__ == "__main__":
             print(df_siting)
 
 
+
+
 df_summary = pd.DataFrame(summary_rows)
 print("\n=== Ringkasan semua growth & model ===")
 print(df_summary)
 df_summary.to_excel("summary_det_stoch_robust.xlsx", index=False)
 
+# ---- Tabel adequacy tambahan ----
+df_adequacy = pd.DataFrame(adequacy_rows)
+print("\n=== Ringkasan adequacy (PV vs μ, μ+κσ) ===")
+print(df_adequacy)
+df_adequacy.to_excel("adequacy_det_stoch_robust.xlsx", index=False)
 
 
 # =========================================
