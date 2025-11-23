@@ -9,6 +9,7 @@ from Deterministic_model import build_deterministic_pv_model
 from Stochastic_model import build_stochastic_pv_model
 from Robust_model import build_robust_pv_model
 
+
 # =========================
 # Seed untuk reproducibility
 # =========================
@@ -149,14 +150,14 @@ df_pv = pd.DataFrame(pv_data, columns=['Scenario', 'Hour', 'Bus', 'Irradiance (W
 # ===========================
 
 x_min   = 300                 # kW
-x_max   = 20000               # kW
-c_res   = 0.01               # contoh nilai kecil, silakan disesuaikan
+x_max   = 40000 #20000               # kW
+c_res   = 0.1               # contoh nilai kecil, silakan disesuaikan
 n_max   = 5                   # Batas Jumlah PV
 V2_min  = 0.95**2            # Batas Minimal Tegangan
 V2_max  = 1.05**2            # Batas maksimal Tegangan
 kappa   = 1.645
 # Bobot objektif teknis
-alpha_pv  = 0.001  # bobot kapasitas PV (per kW)
+alpha_pv  = 0.005 # bobot kapasitas PV (per kW)
 beta_grid = 1.0    # bobot impor grid (per MW rata-rata)
 
 
@@ -278,7 +279,7 @@ if __name__ == "__main__":
                                     name, pv_buses, all_buses, hours, lines, df_pv, df_load,
                                     L_0, edges_by_to, edges_by_from, slack_bus, x_max=x_max, x_min=x_min,
                                     n_max=n_max, V2_min=V2_min, V2_max=V2_max, pf_min=pf_min, alpha_pv=alpha_pv, beta_grid=beta_grid,
-                                    total_pv_cap_max=60000,  # batas total kapasitas (kW), default 60 MW
+                                    total_pv_cap_max=160000,  # batas total kapasitas (kW), default 60 MW
                                     solve=True               # kalau True: langsung optimize
                                 )
 
@@ -287,7 +288,7 @@ if __name__ == "__main__":
                                     name, pv_buses, all_buses, hours, scenarios, lines, df_pv, df_load,
                                     L_0, edges_by_to, edges_by_from, slack_bus, x_max=x_max, x_min=x_min, n_max=n_max,
                                     V2_min=V2_min, V2_max=V2_max, pf_min=pf_min, alpha_pv=alpha_pv, beta_grid=beta_grid,
-                                    total_pv_cap_max=60000,  # batas total kapasitas (kW), default 60 MW
+                                    total_pv_cap_max=160000,  # batas total kapasitas (kW), default 60 MW
                                     solve=True               # kalau True: langsung optimize
                                 )
         
@@ -296,7 +297,7 @@ if __name__ == "__main__":
                                     name, pv_buses, all_buses, hours, scenarios, lines, df_pv, df_load, L_0, edges_by_to,
                                     edges_by_from, slack_bus, x_max=x_max, x_min=x_min, n_max=n_max, V2_min=V2_min, V2_max=V2_max,
                                     pf_min=pf_min, mu_load=mu_load, sigma_load=sigma_load, kappa=kappa, c_res=c_res, alpha_pv=alpha_pv, beta_grid=beta_grid,
-                                    total_pv_cap_max=60000,  # batas total kapasitas (kW), default 60 MW
+                                    total_pv_cap_max=160000,  # batas total kapasitas (kW), default 60 MW
                                     solve=True               # kalau True: langsung optimize
                                 )
         
@@ -493,6 +494,7 @@ if __name__ == "__main__":
         else:
             print(f"[{name}] Model robust tidak optimal, status =", model_rob.Status)
 
+
     print("\n=== Detail lokasi PV per growth & model ===")
     for (growth, model), df_siting in siting_by_growth.items():
         print(f"\n[{growth} - {model}]")
@@ -502,13 +504,95 @@ if __name__ == "__main__":
             print(df_siting)
 
 
-
-
-
 df_summary = pd.DataFrame(summary_rows)
 print("\n=== Ringkasan semua growth & model ===")
 print(df_summary)
 df_summary.to_excel("summary_det_stoch_robust.xlsx", index=False)
 
 
+
+# =========================================
+# 0. Baca / siapkan df_summary
+# =========================================
+# Kalau df_summary belum ada di memory, bisa load dari Excel:
+# df_summary = pd.read_excel("summary_det_stoch_robust.xlsx")
+
+# Pastikan urutan Growth rapi
+growth_order = ['Low', 'Base', 'High']
+df_summary['Growth'] = pd.Categorical(
+    df_summary['Growth'],
+    categories=growth_order,
+    ordered=True
+)
+df_summary = df_summary.sort_values(['Growth', 'Model'])
+
+# =========================================
+# 1. Max line loading (%) vs Growth & Model
+#    (pivot ke bentuk Growth × Model)
+# =========================================
+pivot_loading = df_summary.pivot(
+    index='Growth',
+    columns='Model',
+    values='Max line loading (%)'
+)
+
+# Pastikan hanya pakai model yang memang ada di kolom
+models = [m for m in ['DET', 'STOCH', 'ROBUST'] if m in pivot_loading.columns]
+
+# -----------------------------------------
+# 1A. BAR PLOT – Maximum line loading
+# -----------------------------------------
+plt.figure(figsize=(8, 4))
+ax = pivot_loading[models].plot(kind='bar', figsize=(8, 4))
+
+ax.set_xlabel("Load growth scenario")
+ax.set_ylabel("Max line loading (%)")
+ax.set_title("Figure 1. Maximum line loading vs growth and model")
+ax.legend(title="Model", loc="upper left")
+ax.grid(axis='y', alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+# -----------------------------------------
+# 1B. LINE PLOT – Maximum line loading
+# -----------------------------------------
+plt.figure(figsize=(8, 4))
+for model in models:
+    plt.plot(
+        pivot_loading.index,
+        pivot_loading[model],
+        marker='o',
+        label=model
+    )
+
+plt.xlabel("Load growth scenario")
+plt.ylabel("Max line loading (%)")
+plt.title("Figure 2. Maximum line loading vs growth and model")
+plt.grid(True, alpha=0.3)
+plt.legend(title="Model")
+plt.tight_layout()
+plt.show()
+
+# =========================================
+# 2. Avg reserve (MW) – hanya model ROBUST
+# =========================================
+df_rob = df_summary[df_summary['Model'] == 'ROBUST'].copy()
+df_rob = df_rob.sort_values('Growth')
+
+plt.figure(figsize=(6, 4))
+plt.bar(df_rob['Growth'], df_rob['Avg reserve (MW)'])
+
+plt.xlabel("Load growth scenario")
+plt.ylabel("Average reserve R_h (MW)")
+plt.title("Figure 3. Robust model – average reserve vs growth")
+plt.grid(axis='y', alpha=0.3)
+
+# (opsional) tulis nilai di atas masing-masing bar
+for x, y in zip(df_rob['Growth'], df_rob['Avg reserve (MW)']):
+    plt.text(x, y, f"{y:.1f}",
+             ha='center', va='bottom', fontsize=9)
+
+plt.tight_layout()
+plt.show()
 
