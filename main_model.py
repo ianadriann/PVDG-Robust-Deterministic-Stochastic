@@ -41,47 +41,50 @@ load_profile = load_profile / load_profile.max()
 slack_bus = 2
 Vmin, Vmax = 0.95, 1.05
 Vmin2, Vmax2 = Vmin**2, Vmax**2
+R_default = 1e-5
+Sseed = 0.0
 
-R_default = 1e-5   # p.u. linearized resistance (kecil agar drop tidak over-restrictive)
-Sseed = 0.0        # placeholder; S_MVA aktual dihitung per growth
+excel_file = "data-program/lines_base.xlsx"
 
-# Topologi radial (2..33) dengan cabang
-lines_base = [
-    (2, 3, R_default, Sseed),
-    (3, 4, R_default, Sseed),
-    (4, 5, R_default, Sseed),
-    (5, 6, R_default, Sseed),
-    (6, 7, R_default, Sseed),
-    (7, 8, R_default, Sseed),
-    (8, 9, R_default, Sseed),
-    (9, 10, R_default, Sseed),
-    (10, 11, R_default, Sseed),
-    (11, 12, R_default, Sseed),
-    (12, 13, R_default, Sseed),
-    (13, 14, R_default, Sseed),
-    (14, 15, R_default, Sseed),
-    (15, 16, R_default, Sseed),
-    (16, 17, R_default, Sseed),
-    (17, 18, R_default, Sseed),
+# =================
+# Sheet 1: topologi 
+# =================
+df_lines = pd.read_excel(excel_file, sheet_name="topologi") 
 
-    (2, 19, R_default, Sseed),
-    (19, 20, R_default, Sseed),
-    (20, 21, R_default, Sseed),
-    (21, 22, R_default, Sseed),
+# Buang baris kosong kalau ada
+df_lines = df_lines.dropna(subset=["From", "To"])
 
-    (3, 23, R_default, Sseed),
-    (23, 24, R_default, Sseed),
-    (24, 25, R_default, Sseed),
+lines_base = []
+for _, row in df_lines.iterrows():
+    u = int(row["From"])
+    v = int(row["To"])
+    lines_base.append((u, v, R_default, Sseed))
 
-    (6, 26, R_default, Sseed),
-    (26, 27, R_default, Sseed),
-    (27, 28, R_default, Sseed),
-    (28, 29, R_default, Sseed),
-    (29, 30, R_default, Sseed),
-    (30, 31, R_default, Sseed),
-    (31, 32, R_default, Sseed),
-    (32, 33, R_default, Sseed),
-]
+# Turunkan set bus dari topology dasar (tetap sama seperti kode lama)
+buses = sorted({u for (u, _, _, _) in lines_base} | {v for (_, v, _, _) in lines_base})
+all_buses = buses[:]
+slack_bus = 2
+pv_buses = [b for b in buses if b != slack_bus]
+
+# ========================
+# Sheet 2: beban dasar L_0 
+# ========================
+df_L0 = pd.read_excel(excel_file, sheet_name="Loads")  # atau sheet_name=1
+
+# Buang baris yang Bus / L0_MW-nya kosong
+df_L0 = df_L0.dropna(subset=["Bus", "L0_MW"])
+
+# Bentuk dictionary L_0 dari Excel
+L_0 = {}
+for _, row in df_L0.iterrows():
+    bus = int(row["Bus"])
+    load = float(row["L0_MW"])
+    L_0[bus] = load
+
+# Pastikan semua bus punya entri (kalau ada bus yang tidak tertulis di Excel, diisi 0.0)
+for b in buses:
+    L_0.setdefault(b, 0.0)
+
 
 # Turunkan set bus dari topology dasar
 buses = sorted({u for (u, _, _, _) in lines_base} | {v for (_, v, _, _) in lines_base})
@@ -106,21 +109,6 @@ for (u, v, R, S) in lines_base:
         stack.extend(children.get(w, []))
     edge_downstream.append(ds)
 
-# =====================
-# Data beban baseline
-# =====================
-# L_0 untuk semua bus (MW)
-L_0 = {
-    2: 8.5, 3: 12.0, 4: 7.0, 5: 9.5, 6: 10.0, 7: 6.5,
-    8: 11.0, 9: 5.0, 10: 7.5, 11: 8.0, 12: 9.0,
-    13: 6.5, 14: 7.5, 15: 10.5, 16: 8.0, 17: 11.0,
-    18: 5.5, 19: 12.5, 20: 9.5, 21: 7.0, 22: 11.5,
-    23: 10.5, 24: 11.5, 25: 6.5, 26: 5.0, 27: 8.0, 28: 9.5,
-    29: 7.5, 30: 8.5, 31: 7.0, 32: 9.5, 33: 11.0,
-}
-# Pastikan semua bus punya entri
-for b in buses:
-    L_0.setdefault(b, 0.0)
 
 # ==========================
 # Simulasi Output PV (profil)
@@ -156,7 +144,6 @@ n_max   = 5                   # Batas Jumlah PV
 V2_min  = 0.95**2            # Batas Minimal Tegangan
 V2_max  = 1.05**2            # Batas maksimal Tegangan
 kappa   = 1.645
-# Bobot objektif teknis
 alpha_pv  = 0.005 # bobot kapasitas PV (per kW)
 beta_grid = 1.0    # bobot impor grid (per MW rata-rata)
 
@@ -232,8 +219,6 @@ for e, (u, v, R, S_MVA) in enumerate(lines):
     edges_by_to[v].append(e)
 
 
-
-
 if __name__ == "__main__":
     # Penampung hasil untuk SEMUA growth & model
     summary_rows = []       # untuk tabel ringkasan utama
@@ -256,7 +241,6 @@ if __name__ == "__main__":
                     load_data.append([s, h, i, max(value, 0)])
         df_load = pd.DataFrame(load_data, columns=['Scenario', 'Hour', 'Bus', 'Load (MW)'])
 
-
         # ----------------
         # μ & σ sistem per jam (untuk robust adequacy sistem)
         # ----------------
@@ -271,11 +255,9 @@ if __name__ == "__main__":
 
         demand_stats_by_growth[name] = df_stats[['Hour', 'mu_load', 'sigma_load']].copy()
 
-
         # ---------------
         # Model Gurobi (3 model)
         # ---------------
-
         print(f"[{name}] Menjalankan model deterministic...")
         model_det, vars_det = build_deterministic_pv_model(
                                     name, pv_buses, all_buses, hours, lines, df_pv, df_load,
@@ -774,8 +756,6 @@ if models_env:
     plt.show()
 else:
     print(f"Tidak ada data envelope untuk growth = {growth_to_plot}")
-
-
 
 
 # =========================================
