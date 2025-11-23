@@ -48,6 +48,14 @@ def build_deterministic_pv_model(
                 name=f"pv_output_{i}_{h}"
             )
 
+    # (Cgrid-det) Grid import tidak boleh negatif
+    for h in hours:
+        model_det.addConstr(
+            P_grid_det[h] >= 0.0,
+            name=f"grid_import_nonneg_{h}"
+        )
+
+
     # 4. Kendala kapasitas & siting PV (C3, C4)
     for i in pv_buses:
         model_det.addConstr(x_det[i] <= x_max * y_det[i], name=f"x_le_ymax_{i}")

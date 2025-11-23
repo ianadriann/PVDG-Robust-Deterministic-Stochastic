@@ -42,6 +42,13 @@ def build_stochastic_pv_model(
                 model_stoc.addConstr(P_pv_stoc[i, h, s] == x_stoc[i] * profile / 1000.0,  # kW→MW
                                 name=f"pv_output_{i}_{h}_{s}")
 
+    # (Cgrid-stoch) Grid import tidak boleh negatif
+    for h in hours:
+        for s in scenarios:
+            model_stoc.addConstr(
+                P_grid_stoc[h, s] >= 0.0,
+                name=f"grid_import_nonneg_h{h}_s{s}"
+            )
 
 
     # 4. Kendala kapasitas & siting PV (C3, C4)

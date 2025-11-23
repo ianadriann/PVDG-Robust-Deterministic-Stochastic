@@ -51,6 +51,14 @@ def build_robust_pv_model(
                 model_rob.addConstr(P_pv_rob[i, h, s] == x_rob[i] * profile / 1000.0,  # kW→MW
                                 name=f"pv_output_{i}_{h}_{s}")
 
+    # (Cgrid-rob) Grid import tidak boleh negatif
+    for h in hours:
+        for s in scenarios:
+            model_rob.addConstr(
+                P_grid_rob[h, s] >= 0.0,
+                name=f"grid_import_nonneg_h{h}_s{s}"
+            )
+
 
     # 4. Kendala kapasitas & siting PV (C3, C4)
     for i in pv_buses:
