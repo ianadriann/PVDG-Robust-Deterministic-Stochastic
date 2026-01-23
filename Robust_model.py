@@ -5,6 +5,7 @@ nanti di paper bisa jelaskan dengan kalimat sederhana seperti:
 to cover a µ+κσ estimate of the system load, so that PV installations themselves provide 
 robustness against demand uncertainty, rather than relying on the upstream grid.”
 """
+#kode sebelum perubahan (23 Februari 2026)
 
 
 

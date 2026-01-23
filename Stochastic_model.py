@@ -1,3 +1,4 @@
+#kode sebelum perubahan (23 Februari 2026)
 from gurobipy import Model, GRB, quicksum
 
 def build_stochastic_pv_model(
