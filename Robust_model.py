@@ -88,35 +88,21 @@ def build_robust_pv_model(
                 model_rob.addConstr(P_line_rob[e, h] <=  P_lim, name=f"thermal_up_e{e}_h{h}")
                 model_rob.addConstr(P_line_rob[e, h] >= -P_lim, name=f"thermal_lo_e{e}_h{h}")
 
-    # (4) Nodal power balance (aktif, lossless)
-    for i in all_buses:  # termasuk slack_bus
+    # (4) Nodal power balance (aktif, lossless) - ROBUST LOAD
+    for i in all_buses:
         for h in hours:
-                inflow  = quicksum(P_line_rob[e, h] for e in edges_by_to[i])
-                outflow = quicksum(P_line_rob[e, h] for e in edges_by_from[i])
-                for i in all_buses:
-                    for h in hours:
-                        inflow  = quicksum(P_line_rob[e, h] for e in edges_by_to[i])
-                        outflow = quicksum(P_line_rob[e, h] for e in edges_by_from[i])
-                        load_i  = robust_load_bh.get((h, i), 0.0)
+            inflow  = quicksum(P_line_rob[e, h] for e in edges_by_to[i])
+            outflow = quicksum(P_line_rob[e, h] for e in edges_by_from[i])
+            load_i  = robust_load_bh.get((h, i), 0.0)
 
-                        grid_term = P_grid_rob[h] if i == slack_bus else 0.0
-                        pv_term   = P_pv_rob[i, h] if i in pv_buses else 0.0
+            grid_term = P_grid_rob[h] if i == slack_bus else 0.0
+            pv_term   = P_pv_rob[i, h] if i in pv_buses else 0.0
 
-                        model_rob.addConstr(
-                            pv_term + inflow - outflow + grid_term == load_i,
-                            name=f"nodal_balance_i{i}_h{h}"
-                        )
+            model_rob.addConstr(
+                pv_term + inflow - outflow + grid_term == load_i,
+                name=f"nodal_balance_i{i}_h{h}"
+            )
 
-                # Grid injection hanya di slack bus
-                grid_term = P_grid_rob[h] if i == slack_bus else 0.0
-                
-                # PV hanya di pv_buses
-                pv_term = P_pv_rob[i, h] if i in pv_buses else 0.0
-                
-                model_rob.addConstr(
-                    pv_term + inflow - outflow + grid_term == load_i,
-                    name=f"nodal_balance_i{i}_h{h}"
-                )
         
     # (5) s tegangan (Vmin–Vmax)
     for i in all_buses:

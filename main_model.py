@@ -482,9 +482,8 @@ if __name__ == "__main__":
                 if P_lim <= 0:
                     continue
                 for h in hours:
-                    for s in scenarios:
-                        ratio = abs(P_line_rob[e, h].X) / P_lim
-                        max_loading_rob = max(max_loading_rob, ratio)
+                    ratio = abs(P_line_rob[e, h].X) / P_lim
+                    max_loading_rob = max(max_loading_rob, ratio)
             max_loading_rob_pct = 100.0 * max_loading_rob
 
             # Energi PV & grid per "hari representatif"
