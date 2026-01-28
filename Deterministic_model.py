@@ -45,7 +45,7 @@ def build_deterministic_pv_model(
         for h in hours:
             profile = pv_profile_det.get((h, i), 0.0)
             model_det.addConstr(
-                P_pv_det[i, h] == x_det[i] * profile / 1000.0,  # kW → MW
+                P_pv_det[i, h] <= x_det[i] * profile / 1000.0,  # kW → MW
                 name=f"pv_output_{i}_{h}"
             )
 

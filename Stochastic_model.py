@@ -40,7 +40,7 @@ def build_stochastic_pv_model(
                 profile = df_pv.query(
                     "Scenario == @s and Hour == @h and Bus == @i"
                 )["PV Output Factor"].values[0]
-                model_stoc.addConstr(P_pv_stoc[i, h, s] == x_stoc[i] * profile / 1000.0,  # kW→MW
+                model_stoc.addConstr(P_pv_stoc[i, h, s] <= x_stoc[i] * profile / 1000.0,  # kW→MW
                                 name=f"pv_output_{i}_{h}_{s}")
 
     # (Cgrid-stoch) Grid import tidak boleh negatif

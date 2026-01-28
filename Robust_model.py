@@ -47,7 +47,7 @@ def build_robust_pv_model(
     for i in pv_buses:
         for h in hours:
             profile = pv_profile_rob.get((h, i), 0.0)
-            model_rob.addConstr(P_pv_rob[i, h] == x_rob[i] * profile / 1000.0,
+            model_rob.addConstr(P_pv_rob[i, h] <= x_rob[i] * profile / 1000.0,
                                 name=f"pv_output_{i}_{h}")
 
 
