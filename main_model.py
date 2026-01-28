@@ -242,6 +242,13 @@ if __name__ == "__main__":
                     load_data.append([s, h, i, max(value, 0)])
         df_load = pd.DataFrame(load_data, columns=['Scenario', 'Hour', 'Bus', 'Load (MW)'])
 
+        # --- Robust load per (Hour,Bus): mu + kappa*sigma ---
+        df_bus = df_load.groupby(['Hour','Bus'])['Load (MW)'].agg(['mean','std']).reset_index()
+        df_bus['std'] = df_bus['std'].fillna(0.0)
+        robust_load_bh = {(int(r['Hour']), int(r['Bus'])): float(r['mean'] + kappa * r['std'])
+                        for _, r in df_bus.iterrows()}
+
+
         # ----------------
         # μ & σ sistem per jam (untuk robust adequacy sistem)
         # ----------------
@@ -279,11 +286,12 @@ if __name__ == "__main__":
         
         print(f"[{name}] Menjalankan model robust...")
         model_rob, vars_rob = build_robust_pv_model(
-                                    name, pv_buses, all_buses, hours, scenarios, lines, df_pv, df_load, L_0, edges_by_to,
-                                    edges_by_from, slack_bus, x_max=x_max, x_min=x_min, n_max=n_max, V2_min=V2_min, V2_max=V2_max,
-                                    pf_min=pf_min, mu_load=mu_load, sigma_load=sigma_load, kappa=kappa, c_res=c_res, alpha_pv=alpha_pv, beta_grid=beta_grid,
-                                    total_pv_cap_max=160000,  # batas total kapasitas (kW), default 60 MW
-                                    solve=True               # kalau True: langsung optimize
+                                    name=name, pv_buses=pv_buses, all_buses=all_buses, hours=hours, lines=lines, df_pv=df_pv,
+                                    robust_load_bh=robust_load_bh, L_0=L_0, edges_by_to=edges_by_to, edges_by_from=edges_by_from,
+                                    slack_bus=slack_bus, x_max=x_max, x_min=x_min, n_max=n_max, V2_min=V2_min, V2_max=V2_max,
+                                    pf_min=pf_min, alpha_pv=alpha_pv, beta_grid=beta_grid,
+                                    total_pv_cap_max=160000,
+                                    solve=True
                                 )
         
         # =======================
@@ -453,7 +461,6 @@ if __name__ == "__main__":
         P_line_rob = vars_rob["P_line_rob"]
         P_pv_rob   = vars_rob["P_pv_rob"]
         P_grid_rob = vars_rob["P_grid_rob"]
-        R_res      = vars_rob["R_res"]
 
         if model_rob.Status == GRB.OPTIMAL:
             rob_results = []
@@ -466,14 +473,8 @@ if __name__ == "__main__":
             num_sites_rob   = sum(1 for i in pv_buses if y_rob[i].X > 0.5)
 
             # Voltage & loading: worst case across semua s
-            vmin_rob = float("inf")
-            vmax_rob = 0.0
-            for i in all_buses:
-                for h in hours:
-                    for s in scenarios:
-                        v = (V2_rob[i, h, s].X)**0.5
-                        vmin_rob = min(vmin_rob, v)
-                        vmax_rob = max(vmax_rob, v)
+            vmin_rob = min((V2_rob[i,h].X)**0.5 for i in all_buses for h in hours)
+            vmax_rob = max((V2_rob[i,h].X)**0.5 for i in all_buses for h in hours)
 
             max_loading_rob = 0.0
             for e, (u, v, R, S_MVA) in enumerate(lines):
@@ -482,38 +483,25 @@ if __name__ == "__main__":
                     continue
                 for h in hours:
                     for s in scenarios:
-                        ratio = abs(P_line_rob[e, h, s].X) / P_lim
+                        ratio = abs(P_line_rob[e, h].X) / P_lim
                         max_loading_rob = max(max_loading_rob, ratio)
             max_loading_rob_pct = 100.0 * max_loading_rob
 
             # Energi PV & grid per "hari representatif"
-            pv_energy_day_rob   = 0.0
-            grid_energy_day_rob = 0.0
-            for s in scenarios:
-                for h in hours:
-                    pv_tot   = sum(P_pv_rob[i, h, s].X for i in pv_buses)
-                    grid_tot = P_grid_rob[h, s].X
-                    pv_energy_day_rob   += pv_tot
-                    grid_energy_day_rob += grid_tot
-            pv_energy_day_rob   /= len(scenarios)
-            grid_energy_day_rob /= len(scenarios)
+            pv_energy_day_rob   = sum(sum(P_pv_rob[i, h].X for i in pv_buses) for h in hours)
+            grid_energy_day_rob = sum(P_grid_rob[h].X for h in hours)
 
-            # Robust reserve rata-rata
-            avg_reserve = sum(R_res[h].X for h in hours) / len(hours)
 
+
+            # --- Envelope tegangan per jam (ROBUST) ---
             # --- Envelope tegangan per jam (ROBUST) ---
             vmin_by_h_rob = []
             vmax_by_h_rob = []
+
             for h in hours:
-                vmin_h = float("inf")
-                vmax_h = 0.0
-                for s in scenarios:
-                    for i in all_buses:
-                        v = (V2_rob[i, h, s].X)**0.5
-                        vmin_h = min(vmin_h, v)
-                        vmax_h = max(vmax_h, v)
-                vmin_by_h_rob.append(vmin_h)
-                vmax_by_h_rob.append(vmax_h)
+                vs = [(V2_rob[i, h].X)**0.5 for i in all_buses]  # tidak ada indeks skenario
+                vmin_by_h_rob.append(min(vs))
+                vmax_by_h_rob.append(max(vs))
 
             df_env_rob = pd.DataFrame({
                 "Hour": hours,
@@ -534,7 +522,6 @@ if __name__ == "__main__":
                 "Max line loading (%)": max_loading_rob_pct,
                 "PV energy (MWh/day)": pv_energy_day_rob,
                 "Grid energy (MWh/day)": grid_energy_day_rob,
-                "Avg reserve (MW)": avg_reserve,
             })
 
             siting_by_growth[(name, "ROBUST")] = df_rob_siting.copy()
@@ -612,41 +599,27 @@ if __name__ == "__main__":
                 "Min PV - (μ+κσ) (MW)": min_gap_muk_stoc,
             })
 
-            # 3) MODEL ROBUST:
-            #    (a) PV_rob saja vs μ+κσ
-            #    (b) PV_rob + R_res vs μ+κσ  → harus ≥ 0 oleh konstruksi model
-
-            min_gap_mu_rob      = float("inf")
-            min_gap_muk_rob_PV  = float("inf")
-            min_gap_muk_rob_PVR = float("inf")
+            # 3) MODEL ROBUST (Opsi A1): tanpa skenario, tanpa reserve
+            min_gap_mu_rob  = float("inf")
+            min_gap_muk_rob = float("inf")
 
             for h in hours:
-                # rata-rata PV_rob across scenarios
-                pv_sum = 0.0
-                for s in scenarios:
-                    pv_sum += sum(P_pv_rob[i, h, s].X for i in pv_buses)
-                pv_avg_h = pv_sum / len(scenarios)   # MW
+                # total PV output robust di jam h (MW) - tanpa skenario
+                pv_rob_h = sum(P_pv_rob[i, h].X for i in pv_buses)
 
-                res_h    = R_res[h].X               # MW (robust reserve di jam h)
+                mu_h   = mu_load[h]
+                mu_k_h = mu_load[h] + kappa * sigma_load[h]
 
-                mu_h     = mu_load[h]
-                mu_k_h   = mu_load[h] + kappa * sigma_load[h]
-
-                gap_mu       = pv_avg_h - mu_h
-                gap_muk_PV   = pv_avg_h - mu_k_h
-                gap_muk_PVR  = pv_avg_h + res_h - mu_k_h
-
-                min_gap_mu_rob      = min(min_gap_mu_rob,      gap_mu)
-                min_gap_muk_rob_PV  = min(min_gap_muk_rob_PV,  gap_muk_PV)
-                min_gap_muk_rob_PVR = min(min_gap_muk_rob_PVR, gap_muk_PVR)
+                min_gap_mu_rob  = min(min_gap_mu_rob,  pv_rob_h - mu_h)
+                min_gap_muk_rob = min(min_gap_muk_rob, pv_rob_h - mu_k_h)
 
             adequacy_rows.append({
                 "Growth": name,
                 "Model": "ROBUST",
                 "Min PV - μ (MW)": min_gap_mu_rob,
-                "Min PV - (μ+κσ) (MW)": min_gap_muk_rob_PV,
-                "Min (PV+R) - (μ+κσ) (MW)": min_gap_muk_rob_PVR,
+                "Min PV - (μ+κσ) (MW)": min_gap_muk_rob,
             })
+
         else:
             print(f"[{name}] Adequacy tidak dihitung karena ada model yang tidak optimal.")
 
@@ -821,25 +794,6 @@ plt.grid(True, alpha=0.3)
 plt.legend(title="Model")
 plt.tight_layout()
 plt.show()
-
-# =========================================
-# 2. Avg reserve (MW) – hanya model ROBUST
-# =========================================
-df_rob = df_summary[df_summary['Model'] == 'ROBUST'].copy()
-df_rob = df_rob.sort_values('Growth')
-
-plt.figure(figsize=(6, 4))
-plt.bar(df_rob['Growth'], df_rob['Avg reserve (MW)'])
-
-plt.xlabel("Load growth scenario")
-plt.ylabel("Average reserve R_h (MW)")
-plt.title("Figure 3. Robust model – average reserve vs growth")
-plt.grid(axis='y', alpha=0.3)
-
-# (opsional) tulis nilai di atas masing-masing bar
-for x, y in zip(df_rob['Growth'], df_rob['Avg reserve (MW)']):
-    plt.text(x, y, f"{y:.1f}",
-             ha='center', va='bottom', fontsize=9)
 
 plt.tight_layout()
 plt.show()
