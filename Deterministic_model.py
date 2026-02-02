@@ -1,4 +1,4 @@
-#kode sebelum perubahan (23 Februari 2026)
+
 from gurobipy import Model, GRB, quicksum
 import numpy as np
 
@@ -6,7 +6,7 @@ import numpy as np
 def build_deterministic_pv_model(
     name, pv_buses, all_buses, hours, lines, df_pv, df_load,
     L_0, edges_by_to, edges_by_from, slack_bus, x_max, x_min,
-    n_max, V2_min, V2_max, pf_min, tanphi, alpha_pv, beta_grid,
+    n_max, V2_min, V2_max, pf_min, tanphi, alpha_pv, beta_grid, growth_factor,
     total_pv_cap_max=60000,  # batas total kapasitas (kW), default 60 MW
     solve=False               # kalau True: langsung optimize
 ):
@@ -90,7 +90,7 @@ def build_deterministic_pv_model(
                         name="total_pv_cap_limit")
 
     for i in pv_buses:
-        max_capacity_i = L_0[i] * 1000 * 3  # 3x beban dasar (MW→kW)
+        max_capacity_i = L_0[i] * growth_factor * 1000 * 3  # 3x beban dasar (MW→kW)
         model_det.addConstr(x_det[i] <= max_capacity_i, name=f"cap_per_bus_{i}")
 
     # 5. LinDistFlow-Lite constraints

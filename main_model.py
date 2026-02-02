@@ -1,4 +1,4 @@
-#kode sebelum perubahan (23 Februari 2026)
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -244,6 +244,7 @@ if __name__ == "__main__":
     v_envelope = {}         # (growth, model) → DataFrame Hour, Vmin, Vmax
     
     for name, g in growth_scenarios.items():
+        growth_factor = (1 + g) ** planning_years   
         # ----------------------------
         # Simulasi beban (growth ini)
         # ----------------------------
@@ -292,7 +293,7 @@ if __name__ == "__main__":
         model_det, vars_det = build_deterministic_pv_model(
                                     name, pv_buses, all_buses, hours, lines, df_pv, df_load,
                                     L_0, edges_by_to, edges_by_from, slack_bus, x_max=x_max, x_min=x_min,
-                                    n_max=n_max, V2_min=V2_min, V2_max=V2_max, pf_min=pf_min, tanphi=tanphi, alpha_pv=alpha_pv, beta_grid=beta_grid,
+                                    n_max=n_max, V2_min=V2_min, V2_max=V2_max, pf_min=pf_min, tanphi=tanphi, growth_factor=growth_factor, alpha_pv=alpha_pv, beta_grid=beta_grid,
                                     total_pv_cap_max=160000,  # batas total kapasitas (kW), default 60 MW
                                     solve=True               # kalau True: langsung optimize
                                 )
@@ -301,7 +302,7 @@ if __name__ == "__main__":
         model_stoc, vars_stoc = build_stochastic_pv_model(
                                     name, pv_buses, all_buses, hours, scenarios, lines, df_pv, df_load,
                                     L_0, edges_by_to, edges_by_from, slack_bus, x_max=x_max, x_min=x_min, n_max=n_max,
-                                    V2_min=V2_min, V2_max=V2_max, pf_min=pf_min, tanphi=tanphi, alpha_pv=alpha_pv, beta_grid=beta_grid,
+                                    V2_min=V2_min, V2_max=V2_max, pf_min=pf_min, tanphi=tanphi, growth_factor=growth_factor, alpha_pv=alpha_pv, beta_grid=beta_grid,
                                     total_pv_cap_max=160000,  # batas total kapasitas (kW), default 60 MW
                                     solve=True               # kalau True: langsung optimize
                                 )
@@ -311,7 +312,7 @@ if __name__ == "__main__":
                                     name=name, pv_buses=pv_buses, all_buses=all_buses, hours=hours, lines=lines, df_pv=df_pv,
                                     robust_load_bh=robust_load_bh, L_0=L_0, edges_by_to=edges_by_to, edges_by_from=edges_by_from,
                                     slack_bus=slack_bus, x_max=x_max, x_min=x_min, n_max=n_max, V2_min=V2_min, V2_max=V2_max,
-                                    pf_min=pf_min, alpha_pv=alpha_pv, tanphi=tanphi, beta_grid=beta_grid,
+                                    pf_min=pf_min, alpha_pv=alpha_pv, tanphi=tanphi, growth_factor=growth_factor, beta_grid=beta_grid,
                                     total_pv_cap_max=160000,
                                     solve=True
                                 )
