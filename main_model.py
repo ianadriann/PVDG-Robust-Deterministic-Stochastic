@@ -24,6 +24,7 @@ scenarios = list(range(1, 11))     # 10 skenario Monte Carlo
 planning_years = 15
 rho = 2.0                          # tingkat konservatif robust (≈95%:1.96; 99%:2.33)
 max_sun = 1000
+S_base = 100.0  # MVA
 
 # Sub-skenario load growth
 growth_scenarios = {'Low': 0.02, 'Base': 0.03, 'High': 0.05}
@@ -42,7 +43,7 @@ load_profile = load_profile / load_profile.max()
 slack_bus = 2
 Vmin, Vmax = 0.95, 1.05
 Vmin2, Vmax2 = Vmin**2, Vmax**2
-R_default = 1e-5
+#R_default = 1e-5
 Sseed = 0.0
 
 excel_file = "data-program/lines_base.xlsx"
@@ -53,16 +54,27 @@ excel_file = "data-program/lines_base.xlsx"
 df_lines = pd.read_excel(excel_file, sheet_name="topologi") 
 
 # Buang baris kosong kalau ada
-df_lines = df_lines.dropna(subset=["From", "To"])
+df_lines = pd.read_excel(excel_file, sheet_name="topologi")
+df_lines = df_lines.dropna(subset=["From", "To", "R_pu", "X_pu"])
 
 lines_base = []
 for _, row in df_lines.iterrows():
     u = int(row["From"])
     v = int(row["To"])
-    lines_base.append((u, v, R_default, Sseed))
+    R = float(row["R_pu"]) / S_base
+    X = float(row["X_pu"]) / S_base
+    lines_base.append((u, v, R, X, Sseed))   # <-- BENAR (5 elemen)
+
+
+Rs = [R for (_, _, R, _, _) in lines_base]
+Xs = [X for (_, _, _, X, _) in lines_base]
+print("R min/max:", min(Rs), max(Rs))
+print("X min/max:", min(Xs), max(Xs))
+
+
 
 # Turunkan set bus dari topology dasar (tetap sama seperti kode lama)
-buses = sorted({u for (u, _, _, _) in lines_base} | {v for (_, v, _, _) in lines_base})
+buses = sorted({u for (u, _, _, _, _) in lines_base} | {v for (_, v, _, _, _) in lines_base})
 all_buses = buses[:]
 slack_bus = 2
 pv_buses = [b for b in buses if b != slack_bus]
@@ -82,24 +94,28 @@ for _, row in df_L0.iterrows():
     load = float(row["L0_MW"])
     L_0[bus] = load
 
+print("Total base load sum(L0) [MW] =", sum(L_0.values()))
+print("Max single-bus L0 [MW] =", max(L_0.values()))
+
+
 # Pastikan semua bus punya entri (kalau ada bus yang tidak tertulis di Excel, diisi 0.0)
 for b in buses:
     L_0.setdefault(b, 0.0)
 
 
 # Turunkan set bus dari topology dasar
-buses = sorted({u for (u, _, _, _) in lines_base} | {v for (_, v, _, _) in lines_base})
+buses = sorted({u for (u, _, _, _, _) in lines_base} | {v for (_, v, _, _, _) in lines_base})
 all_buses = buses[:]                              # alias bila dibutuhkan
 pv_buses = [b for b in buses if b != slack_bus]   # PV tidak ditempatkan di slack
 
 # Build children adjacency (untuk hitung downstream set)
 children = {i: [] for i in buses}
-for (u, v, R, S) in lines_base:
+for (u, v, R, X, S) in lines_base:
     children[u].append(v)
 
 # Precompute downstream node-set untuk tiap edge (sekali saja)
 edge_downstream = []  # list of set(node) untuk setiap edge index pada lines_base
-for (u, v, R, S) in lines_base:
+for (u, v, R, X, S) in lines_base:
     stack = [v]
     ds = set()
     while stack:
@@ -138,7 +154,7 @@ df_pv = pd.DataFrame(pv_data, columns=['Scenario', 'Hour', 'Bus', 'Irradiance (W
 # Parameter /Optimasi
 # ===========================
 
-x_min   = 300                 # kW
+x_min   = 10   # kW (atau 0 kalau mau lebih fleksibel)
 x_max   = 40000 #20000               # kW
 c_res   = 0.1               # contoh nilai kecil, silakan disesuaikan
 n_max   = 5                   # Batas Jumlah PV
@@ -196,7 +212,7 @@ robust_load_high = {
 
 # Hitung S_edge_MVA dari robust downstream peak + headroom
 S_edge_MVA = []
-for e, (u, v, R, _) in enumerate(lines_base):
+for e, (u, v, R, X, _) in enumerate(lines_base):
     ds_nodes = edge_downstream[e]
     ds_hour_peaks = []
     for h in hours:
@@ -209,13 +225,13 @@ for e, (u, v, R, _) in enumerate(lines_base):
 
 # Bentuk lines eksisting (R, S_MVA tetap untuk SEMUA growth)
 lines = []
-for e, (u, v, R, _) in enumerate(lines_base):
-    lines.append((u, v, R, S_edge_MVA[e]))
+for e, (u, v, R, X, _) in enumerate(lines_base):
+    lines.append((u, v, R, X, S_edge_MVA[e]))
 
 # Index bantu edges_by_from / edges_by_to (topologi sama)
 edges_by_from = {i: [] for i in all_buses}
 edges_by_to   = {i: [] for i in all_buses}
-for e, (u, v, R, S_MVA) in enumerate(lines):
+for e, (u, v, R, X, S_MVA) in enumerate(lines):
     edges_by_from[u].append(e)
     edges_by_to[v].append(e)
 
@@ -241,6 +257,12 @@ if __name__ == "__main__":
                     value = np.random.normal(mean, std_dev)
                     load_data.append([s, h, i, max(value, 0)])
         df_load = pd.DataFrame(load_data, columns=['Scenario', 'Hour', 'Bus', 'Load (MW)'])
+
+        # --- Tambahkan Q-load (MVAr) dari PF tetap ---
+        pf_load = 0.95
+        tanphi = np.tan(np.arccos(pf_load))
+        df_load["Q (MVAr)"] = df_load["Load (MW)"] * tanphi
+
 
         # --- Robust load per (Hour,Bus): mu + kappa*sigma ---
         df_bus = df_load.groupby(['Hour','Bus'])['Load (MW)'].agg(['mean','std']).reset_index()
@@ -270,7 +292,7 @@ if __name__ == "__main__":
         model_det, vars_det = build_deterministic_pv_model(
                                     name, pv_buses, all_buses, hours, lines, df_pv, df_load,
                                     L_0, edges_by_to, edges_by_from, slack_bus, x_max=x_max, x_min=x_min,
-                                    n_max=n_max, V2_min=V2_min, V2_max=V2_max, pf_min=pf_min, alpha_pv=alpha_pv, beta_grid=beta_grid,
+                                    n_max=n_max, V2_min=V2_min, V2_max=V2_max, pf_min=pf_min, tanphi=tanphi, alpha_pv=alpha_pv, beta_grid=beta_grid,
                                     total_pv_cap_max=160000,  # batas total kapasitas (kW), default 60 MW
                                     solve=True               # kalau True: langsung optimize
                                 )
@@ -279,7 +301,7 @@ if __name__ == "__main__":
         model_stoc, vars_stoc = build_stochastic_pv_model(
                                     name, pv_buses, all_buses, hours, scenarios, lines, df_pv, df_load,
                                     L_0, edges_by_to, edges_by_from, slack_bus, x_max=x_max, x_min=x_min, n_max=n_max,
-                                    V2_min=V2_min, V2_max=V2_max, pf_min=pf_min, alpha_pv=alpha_pv, beta_grid=beta_grid,
+                                    V2_min=V2_min, V2_max=V2_max, pf_min=pf_min, tanphi=tanphi, alpha_pv=alpha_pv, beta_grid=beta_grid,
                                     total_pv_cap_max=160000,  # batas total kapasitas (kW), default 60 MW
                                     solve=True               # kalau True: langsung optimize
                                 )
@@ -289,7 +311,7 @@ if __name__ == "__main__":
                                     name=name, pv_buses=pv_buses, all_buses=all_buses, hours=hours, lines=lines, df_pv=df_pv,
                                     robust_load_bh=robust_load_bh, L_0=L_0, edges_by_to=edges_by_to, edges_by_from=edges_by_from,
                                     slack_bus=slack_bus, x_max=x_max, x_min=x_min, n_max=n_max, V2_min=V2_min, V2_max=V2_max,
-                                    pf_min=pf_min, alpha_pv=alpha_pv, beta_grid=beta_grid,
+                                    pf_min=pf_min, alpha_pv=alpha_pv, tanphi=tanphi, beta_grid=beta_grid,
                                     total_pv_cap_max=160000,
                                     solve=True
                                 )
@@ -320,7 +342,7 @@ if __name__ == "__main__":
             vmax_det = max((V2_det[i, h].X)**0.5 for i in all_buses for h in hours)
 
             max_loading_det = 0.0
-            for e, (u, v, R, S_MVA) in enumerate(lines):
+            for e, (u, v, R, X, S_MVA) in enumerate(lines):
                 P_lim = pf_min * S_MVA
                 if P_lim <= 0:
                     continue
@@ -392,7 +414,7 @@ if __name__ == "__main__":
                         vmax_stoc = max(vmax_stoc, v)
 
             max_loading_stoc = 0.0
-            for e, (u, v, R, S_MVA) in enumerate(lines):
+            for e, (u, v, R, X, S_MVA) in enumerate(lines):
                 P_lim = pf_min * S_MVA
                 if P_lim <= 0:
                     continue
@@ -477,7 +499,7 @@ if __name__ == "__main__":
             vmax_rob = max((V2_rob[i,h].X)**0.5 for i in all_buses for h in hours)
 
             max_loading_rob = 0.0
-            for e, (u, v, R, S_MVA) in enumerate(lines):
+            for e, (u, v, R, X, S_MVA) in enumerate(lines):
                 P_lim = pf_min * S_MVA
                 if P_lim <= 0:
                     continue
