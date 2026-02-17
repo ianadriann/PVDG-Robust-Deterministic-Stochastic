@@ -11,6 +11,102 @@ from Stochastic_model import build_stochastic_pv_model
 from Robust_model import build_robust_pv_model
 
 
+# =========================================================
+# EXPORT FIGURE/TABLE FOR PAPER (Daily load profile & Growth table)
+# Letakkan tepat setelah import, sebelum np.random.seed(42)
+# =========================================================
+
+def export_daily_load_profile(lambda_h, outdir="paper_outputs", fname="Fig2_load_profile_lambda.png"):
+    """
+    Figure: Daily load profile λ(h) untuk 24 jam.
+    lambda_h: array-like panjang 24 (sudah dinormalisasi p.u.)
+    """
+    os.makedirs(outdir, exist_ok=True)
+
+    lam = np.asarray(lambda_h, dtype=float).flatten()
+    if lam.size != 24:
+        raise ValueError(f"load_profile harus panjang 24, tetapi sekarang {lam.size}")
+
+    hours_plot = np.arange(1, 25)  # 1..24 agar rapi untuk paper
+
+    plt.figure(figsize=(7.5, 3.8))
+    plt.plot(hours_plot, lam, marker="o")
+    plt.xlabel("Hour (h)")
+    plt.ylabel("Load multiplier, λ(h) (p.u.)")
+    plt.xticks(hours_plot)
+    plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.8)
+    plt.tight_layout()
+
+    outpath = os.path.join(outdir, fname)
+    plt.savefig(outpath, dpi=300)
+    plt.close()
+    print(f"[Paper] Saved daily load profile figure to: {outpath}")
+
+def export_daily_load_profile_table(lambda_h,
+                                    outdir="paper_outputs",
+                                    fname_xlsx="Fig2_load_profile_lambda.xlsx",
+                                    fname_csv="Fig2_load_profile_lambda.csv"):
+    """
+    Export data Figure 2 (λ(h) 24 jam) ke Excel/CSV.
+    Output kolom:
+      - Hour (1..24)
+      - lambda_h (p.u.)
+    """
+    os.makedirs(outdir, exist_ok=True)
+
+    lam = np.asarray(lambda_h, dtype=float).flatten()
+    if lam.size != 24:
+        raise ValueError(f"load_profile harus panjang 24, tetapi sekarang {lam.size}")
+
+    df = pd.DataFrame({
+        "Hour": np.arange(1, 25),
+        "lambda_h (p.u.)": lam
+    })
+
+    xlsx_path = os.path.join(outdir, fname_xlsx)
+    csv_path  = os.path.join(outdir, fname_csv)
+
+    df.to_excel(xlsx_path, index=False)
+    df.to_csv(csv_path, index=False)
+
+    print(f"[Paper] Saved Fig2 λ(h) table XLSX to: {xlsx_path}")
+    print(f"[Paper] Saved Fig2 λ(h) table CSV  to: {csv_path}")
+    print("\n[Paper] Preview Fig2 λ(h):\n", df.to_string(index=False))
+
+
+def export_growth_table(growth_rates_dict, planning_years=15, stage_years=(0, 5, 10, 15),
+                        outdir="paper_outputs",
+                        fname_csv="Table1_growth_multipliers.csv",
+                        fname_xlsx="Table1_growth_multipliers.xlsx"):
+    """
+    Table: Load growth scenarios and growth multipliers (T=planning_years).
+    growth_rates_dict: dict annual growth rate, contoh: {'Low':0.02,'Base':0.03,'High':0.05}
+    multiplier(t) = (1+r)^t
+    """
+    os.makedirs(outdir, exist_ok=True)
+
+    rows = []
+    for scen, r in growth_rates_dict.items():
+        r = float(r)
+        row = {"Scenario": scen, "Annual growth rate r": r}
+        for t in stage_years:
+            row[f"Multiplier at year {t}"] = (1.0 + r) ** int(t)
+        rows.append(row)
+
+    df = pd.DataFrame(rows).sort_values("Scenario")
+
+    csv_path = os.path.join(outdir, fname_csv)
+    xlsx_path = os.path.join(outdir, fname_xlsx)
+
+    df.to_csv(csv_path, index=False)
+    df.to_excel(xlsx_path, index=False)
+
+    print(f"[Paper] Saved growth table CSV  to: {csv_path}")
+    print(f"[Paper] Saved growth table XLSX to: {xlsx_path}")
+    print("\n[Paper] Preview Table 1:\n", df.to_string(index=False))
+
+
+
 # =========================
 # Seed untuk reproducibility
 # =========================
@@ -150,6 +246,73 @@ for s in scenarios:
 
 df_pv = pd.DataFrame(pv_data, columns=['Scenario', 'Hour', 'Bus', 'Irradiance (W/m²)', 'PV Output Factor'])
 
+# =========================================================
+# FIG. X — PV output factor profile (24 hours) + Excel export
+# =========================================================
+
+# 1) Rata-rata PV output factor per (Scenario, Hour) di seluruh PV buses
+df_pv_hour_s = (
+    df_pv.groupby(["Scenario", "Hour"])["PV Output Factor"]
+         .mean()
+         .reset_index()
+)
+
+# 2) Statistik lintas skenario per jam: mean/min/max (opsional untuk band)
+df_pv_profile = (
+    df_pv_hour_s.groupby("Hour")["PV Output Factor"]
+                .agg(["mean", "min", "max"])
+                .reset_index()
+)
+
+# Ubah Hour dari 0–23 menjadi 1–24 (lebih enak untuk paper)
+df_pv_profile["Hour"] = df_pv_profile["Hour"] + 1
+
+# Rapikan nama kolom
+df_pv_profile = df_pv_profile.rename(columns={
+    "mean": "PV_Factor_Mean",
+    "min":  "PV_Factor_Min",
+    "max":  "PV_Factor_Max"
+})
+
+print("\n=== PV output factor profile (hourly) ===")
+print(df_pv_profile)
+
+# 3) Simpan ke Excel
+# 3) Simpan ke Excel (masuk folder paper_outputs)
+os.makedirs("paper_outputs", exist_ok=True)
+out_xlsx = os.path.join("paper_outputs", "FigX_pv_output_factor_profile.xlsx")
+
+with pd.ExcelWriter(out_xlsx) as writer:
+    df_pv_profile.to_excel(writer, sheet_name="HourlyProfile", index=False)
+    df_pv_hour_s.assign(Hour=df_pv_hour_s["Hour"] + 1).to_excel(writer, sheet_name="ScenarioHourly", index=False)
+
+print(f"\n[Saved] Excel PV profile -> {out_xlsx}")
+
+# 4) Plot Figure + simpan PNG (masuk folder paper_outputs)
+plt.figure(figsize=(8, 4))
+plt.plot(df_pv_profile["Hour"], df_pv_profile["PV_Factor_Mean"],
+         marker="o", linestyle="-", label="Mean PV output factor")
+
+plt.fill_between(df_pv_profile["Hour"],
+                 df_pv_profile["PV_Factor_Min"],
+                 df_pv_profile["PV_Factor_Max"],
+                 alpha=0.15, label="Min–Max across scenarios")
+
+plt.xlabel("Hour (h)")
+plt.ylabel("PV output factor (kW/kW)")
+plt.title("Fig. X. PV output factor profile over a representative day")
+plt.grid(True, alpha=0.3)
+plt.legend()
+plt.tight_layout()
+
+out_png = os.path.join("paper_outputs", "FigX_pv_output_factor_profile.png")
+plt.savefig(out_png, dpi=300, bbox_inches="tight")
+plt.show()
+
+print(f"[Saved] Figure PV profile -> {out_png}")
+
+
+
 # ===========================
 # Parameter /Optimasi
 # ===========================
@@ -157,7 +320,7 @@ df_pv = pd.DataFrame(pv_data, columns=['Scenario', 'Hour', 'Bus', 'Irradiance (W
 x_min   = 10   # kW (atau 0 kalau mau lebih fleksibel)
 x_max   = 40000 #20000               # kW
 c_res   = 0.1               # contoh nilai kecil, silakan disesuaikan
-n_max   = 5                   # Batas Jumlah PV
+n_max   = 6                   # Batas Jumlah PV
 V2_min  = 0.95**2            # Batas Minimal Tegangan
 V2_max  = 1.05**2            # Batas maksimal Tegangan
 kappa   = 1.645
@@ -242,7 +405,29 @@ if __name__ == "__main__":
     siting_by_growth = {}   # simpan df siting per growth & model
     adequacy_rows = []      #Penampung metrik adequacy (PV vs μ, μ+κσ)
     v_envelope = {}         # (growth, model) → DataFrame Hour, Vmin, Vmax
+
+    # ============================
+    # (Tambahan untuk PAPER)
+    # ============================
+    # Figure: profil beban harian λ(h) (pakai load_profile Anda)
+    export_daily_load_profile(load_profile, outdir="paper_outputs", fname="Fig3_load_profile_lambda.png")
+
+    # Table: growth scenarios & multipliers (pakai growth_scenarios Anda)
+    export_growth_table(growth_scenarios, planning_years=planning_years, stage_years=(0, 5, 10, 15),
+                        outdir="paper_outputs",
+                        fname_csv="Table1_growth_multipliers.csv",
+                        fname_xlsx="Table1_growth_multipliers.xlsx")
     
+    # >>> Tambahan: export data Fig2 ke Excel/CSV
+    export_daily_load_profile_table(load_profile,
+                                    outdir="paper_outputs",
+                                    fname_xlsx="Fig2_load_profile_lambda.xlsx",
+                                    fname_csv="Fig2_load_profile_lambda.csv")
+
+
+    # ============================
+    # Loop utama 
+    # ============================
     for name, g in growth_scenarios.items():
         growth_factor = (1 + g) ** planning_years   
         # ----------------------------
@@ -654,6 +839,58 @@ if __name__ == "__main__":
             print("  (Tidak ada PV dipasang)")
         else:
             print(df_siting)
+    
+    # =========================================================
+    # TABLE A — PV siting & sizing summary (export to Excel/CSV)
+    # Letakkan setelah print "Detail lokasi PV..." dan sebelum df_summary dibuat
+    # =========================================================
+    os.makedirs("paper_outputs", exist_ok=True)
+
+    # Long table: Growth, Model, Bus, PV Capacity (MW)
+    tableA_long_rows = []
+    for (growth, model), df_siting in siting_by_growth.items():
+        if df_siting is None or df_siting.empty:
+            continue
+        for _, r in df_siting.iterrows():
+            tableA_long_rows.append({
+                "Growth": growth,
+                "Model": model,
+                "Bus": int(r["Bus"]),
+                "PV Capacity (MW)": float(r["PV Capacity (MW)"])
+            })
+
+    df_tableA_long = pd.DataFrame(tableA_long_rows)
+
+    # Summary per (Growth, Model): Total PV + #Sites
+    tableA_sum_rows = []
+    for (growth, model), df_siting in siting_by_growth.items():
+        if df_siting is None or df_siting.empty:
+            total_pv = 0.0
+            nsite = 0
+        else:
+            total_pv = float(df_siting["PV Capacity (MW)"].sum())
+            nsite = int(df_siting.shape[0])
+
+        tableA_sum_rows.append({
+            "Growth": growth,
+            "Model": model,
+            "Total PV (MW)": total_pv,
+            "#Sites": nsite
+        })
+
+    df_tableA_summary = pd.DataFrame(tableA_sum_rows).sort_values(["Growth", "Model"])
+
+    # Save
+    tableA_path = os.path.join("paper_outputs", "TableA_PV_siting_sizing.xlsx")
+    with pd.ExcelWriter(tableA_path) as writer:
+        df_tableA_summary.to_excel(writer, sheet_name="Summary", index=False)
+        df_tableA_long.to_excel(writer, sheet_name="SitingDetail", index=False)
+
+    df_tableA_summary.to_csv(os.path.join("paper_outputs", "TableA_PV_siting_sizing_summary.csv"), index=False)
+    df_tableA_long.to_csv(os.path.join("paper_outputs", "TableA_PV_siting_sizing_detail.csv"), index=False)
+
+    print(f"[Paper] Saved Table A to: {tableA_path}")
+
 
 
 df_summary = pd.DataFrame(summary_rows)
@@ -661,11 +898,80 @@ print("\n=== Ringkasan semua growth & model ===")
 print(df_summary)
 df_summary.to_excel("summary_det_stoch_robust.xlsx", index=False)
 
+# =========================================================
+# TABLE B — Comparative metrics (paper-ready subset)
+# Letakkan setelah df_summary disimpan
+# =========================================================
+os.makedirs("paper_outputs", exist_ok=True)
+
+df_tableB = df_summary[[
+    "Growth", "Model",
+    "Total PV (MW)", "#Sites",
+    "Vmin (p.u.)", "Vmax (p.u.)",
+    "Max line loading (%)"
+]].copy()
+
+tableB_path = os.path.join("paper_outputs", "TableB_Comparative_Metrics.xlsx")
+df_tableB.to_excel(tableB_path, index=False)
+df_tableB.to_csv(os.path.join("paper_outputs", "TableB_Comparative_Metrics.csv"), index=False)
+
+print(f"[Paper] Saved Table B to: {tableB_path}")
+
+
 # ---- Tabel adequacy tambahan ----
 df_adequacy = pd.DataFrame(adequacy_rows)
 print("\n=== Ringkasan adequacy (PV vs μ, μ+κσ) ===")
 print(df_adequacy)
 df_adequacy.to_excel("adequacy_det_stoch_robust.xlsx", index=False)
+
+# =========================================
+# Table X. Summary of optimization formulations (DET vs STOCH vs ROBUST)
+# (tabel deskriptif untuk paper)
+# =========================================
+tableX_rows = [
+    {
+        "Formulation": "Deterministic (DET)",
+        "Uncertainty handling": "Single representative operating point (mean/expected inputs)",
+        "Indices": "h ∈ {0..23}",
+        "Load input": "df_load (uses mean profile implicitly in formulation)",
+        "PV input": "df_pv (PV Output Factor, without scenario index in constraints)",
+        "Objective (typical in this code)": "min α_pv·Σ_i x_i  +  β_grid·Σ_h P_grid(h) (no scenario index)",
+        "Backbone constraints": "LinDistFlow-Lite nodal balance + voltage drop, voltage limits, thermal limits",
+        "Siting/sizing constraints": "x_min ≤ x_i ≤ x_max·y_i ; Σ_i y_i ≤ n_max ; cap_per_bus(i)",
+        "Inverter VAR constraints": "Q_pv bounded by inverter capability as function of PV capacity/output",
+    },
+    {
+        "Formulation": "Scenario-based stochastic (STOCH)",
+        "Uncertainty handling": "Monte Carlo scenarios (sampled load & PV factors), expected-value objective",
+        "Indices": "h ∈ {0..23}, s ∈ {1..N_MC}",
+        "Load input": "df_load (Scenario, Hour, Bus)",
+        "PV input": "df_pv (Scenario, Hour, Bus) → PV Output Factor",
+        "Objective (typical in this code)": "min α_pv·Σ_i x_i  +  β_grid·(1/|S|)·Σ_s Σ_h P_grid(h,s)",
+        "Backbone constraints": "LinDistFlow-Lite nodal balance + voltage drop for each (h,s), voltage limits, thermal limits",
+        "Siting/sizing constraints": "x_min ≤ x_i ≤ x_max·y_i ; Σ_i y_i ≤ n_max ; cap_per_bus(i)",
+        "Inverter VAR constraints": "Q_pv bounded by inverter capability for each (h,s)",
+    },
+    {
+        "Formulation": "Robust feeder-aware (ROBUST)",
+        "Uncertainty handling": "Robust load per bus-hour: μ + κσ (no scenario index in network constraints)",
+        "Indices": "h ∈ {0..23}",
+        "Load input": "robust_load_bh[(h,i)] = μ_{i}(h) + κ·σ_{i}(h)",
+        "PV input": "df_pv (PV Output Factor, used without scenario index in constraints)",
+        "Objective (typical in this code)": "min α_pv·Σ_i x_i  +  β_grid·Σ_h P_grid(h) (robust-feasible network)",
+        "Backbone constraints": "LinDistFlow-Lite nodal balance + voltage drop under robust load, voltage limits, thermal limits",
+        "Siting/sizing constraints": "x_min ≤ x_i ≤ x_max·y_i ; Σ_i y_i ≤ n_max ; cap_per_bus(i)",
+        "Inverter VAR constraints": "Q_pv bounded by inverter capability as function of PV capacity/output",
+    },
+]
+
+df_tableX = pd.DataFrame(tableX_rows)
+
+print("\n=== Table X. Summary of optimization formulations (DET vs STOCH vs ROBUST) ===")
+print(df_tableX)
+
+# Simpan ke Excel (bisa langsung dipakai untuk copy ke Word)
+df_tableX.to_excel("TableX_Summary_Formulations.xlsx", index=False)
+
 
 # =========================================
 # 3. Voltage envelope: tabel + Excel
@@ -698,6 +1004,8 @@ if env_rows:
     # Simpan ke Excel:
     #  - Sheet "All"   : semua growth+model
     #  - Sheet per kombinasi (Low_DET, Base_STOCH, dst.)
+    os.makedirs("paper_outputs", exist_ok=True)
+    env_all_path = os.path.join("paper_outputs", "voltage_envelope_all.xlsx")
     with pd.ExcelWriter("voltage_envelope_all.xlsx") as writer:
         df_env_all.to_excel(writer, sheet_name="All", index=False)
         for (growth, model), df_env in v_envelope.items():
@@ -711,7 +1019,7 @@ else:
 # =========================================
 # 4. Voltage envelope per jam (contoh: Base growth)
 # =========================================
-growth_to_plot = "Base"
+growth_to_plot = "High"
 
 # Pastikan data envelope untuk growth & model tersedia
 models_env = []
@@ -726,7 +1034,7 @@ if models_env:
     # Plot Vmin per model
     for m in models_env:
         df_env = v_envelope[(growth_to_plot, m)]
-        plt.plot(df_env["Hour"], df_env["Vmin"],
+        plt.plot(df_env["Hour"] + 1, df_env["Vmin"],
                  marker="o",
                  linestyle="-",
                  label=f"{m} - Vmin")
@@ -734,7 +1042,7 @@ if models_env:
     # Plot Vmax per model
     for m in models_env:
         df_env = v_envelope[(growth_to_plot, m)]
-        plt.plot(df_env["Hour"], df_env["Vmax"],
+        plt.plot(df_env["Hour"] + 1, df_env["Vmax"],
                  marker="",
                  linestyle="--",
                  label=f"{m} - Vmax")
@@ -749,6 +1057,28 @@ if models_env:
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
+    # --- Save Fig. A + export data (paper outputs) ---
+    os.makedirs("paper_outputs", exist_ok=True)
+
+    # Ubah hour 0..23 -> 1..24 agar konsisten dengan λ(h)
+    df_env_save = pd.DataFrame()
+    for m in models_env:
+        tmp = v_envelope[(growth_to_plot, m)].copy()
+        tmp["Hour"] = tmp["Hour"] + 1
+        tmp["Growth"] = growth_to_plot
+        tmp["Model"] = m
+        df_env_save = pd.concat([df_env_save, tmp], ignore_index=True)
+
+    env_xlsx = os.path.join("paper_outputs", f"FigA_VoltageEnvelope_{growth_to_plot}.xlsx")
+    df_env_save.to_excel(env_xlsx, index=False)
+    df_env_save.to_csv(os.path.join("paper_outputs", f"FigA_VoltageEnvelope_{growth_to_plot}.csv"), index=False)
+
+    figA_path = os.path.join("paper_outputs", f"FigA_VoltageEnvelope_{growth_to_plot}.png")
+    plt.savefig(figA_path, dpi=300, bbox_inches="tight")
+
+    print(f"[Paper] Saved Fig. A PNG to: {figA_path}")
+    print(f"[Paper] Saved Fig. A data to: {env_xlsx}")
+
     plt.show()
 else:
     print(f"Tidak ada data envelope untuk growth = {growth_to_plot}")
@@ -770,6 +1100,7 @@ df_summary['Growth'] = pd.Categorical(
 df_summary = df_summary.sort_values(['Growth', 'Model'])
 
 # =========================================
+
 # 1. Max line loading (%) vs Growth & Model
 #    (pivot ke bentuk Growth × Model)
 # =========================================
@@ -778,6 +1109,18 @@ pivot_loading = df_summary.pivot(
     columns='Model',
     values='Max line loading (%)'
 )
+
+# =========================================================
+# FIG. B — Export max line loading data to Excel/CSV
+# =========================================================
+os.makedirs("paper_outputs", exist_ok=True)
+
+df_figB_data = pivot_loading.reset_index()
+figB_data_path = os.path.join("paper_outputs", "FigB_MaxLineLoading_Data.xlsx")
+df_figB_data.to_excel(figB_data_path, index=False)
+df_figB_data.to_csv(os.path.join("paper_outputs", "FigB_MaxLineLoading_Data.csv"), index=False)
+print(f"[Paper] Saved Fig. B data to: {figB_data_path}")
+
 
 # Pastikan hanya pakai model yang memang ada di kolom
 models = [m for m in ['DET', 'STOCH', 'ROBUST'] if m in pivot_loading.columns]
@@ -790,12 +1133,17 @@ ax = pivot_loading[models].plot(kind='bar', figsize=(8, 4))
 
 ax.set_xlabel("Load growth scenario")
 ax.set_ylabel("Max line loading (%)")
-ax.set_title("Figure 1. Maximum line loading vs growth and model")
+ax.set_title("Fig. B1. Maximum line loading vs growth and model (bar)")
 ax.legend(title="Model", loc="upper left")
 ax.grid(axis='y', alpha=0.3)
-
 plt.tight_layout()
+
+figB_bar_path = os.path.join("paper_outputs", "FigB_MaxLineLoading_Bar.png")
+ax.get_figure().savefig(figB_bar_path, dpi=300, bbox_inches="tight")
+print(f"[Paper] Saved Fig. B bar plot to: {figB_bar_path}")
+
 plt.show()
+
 
 # -----------------------------------------
 # 1B. LINE PLOT – Maximum line loading
@@ -815,8 +1163,10 @@ plt.title("Figure 2. Maximum line loading vs growth and model")
 plt.grid(True, alpha=0.3)
 plt.legend(title="Model")
 plt.tight_layout()
-plt.show()
 
-plt.tight_layout()
+figB_line_path = os.path.join("paper_outputs", "FigB_MaxLineLoading_Line.png")
+plt.savefig(figB_line_path, dpi=300, bbox_inches="tight")
+print(f"[Paper] Saved Fig. B line plot to: {figB_line_path}")
+
 plt.show()
 
